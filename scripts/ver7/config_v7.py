@@ -44,9 +44,9 @@ EMA_MID = 30
 EMA_LONG = 40
 
 # MACD (Moving Average Convergence Divergence) - 1時間足ダイバージェンス検出用
-MACD_FAST = 12      # 短期EMA
-MACD_SLOW = 26      # 長期EMA
-MACD_SIGNAL = 9     # シグナルライン
+MACD_FAST = 6       # 短期EMA
+MACD_SLOW = 13      # 長期EMA
+MACD_SIGNAL = 4     # シグナルライン
 
 # ZigZag - ダイバージェンス検出用（1時間足）
 ZIGZAG_1H_DEPTH = 12      # Ver7: Depth 12でダイバージェンス検出

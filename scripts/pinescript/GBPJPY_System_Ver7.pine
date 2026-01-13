@@ -19,9 +19,9 @@ ema_mid = input.int(30, "EMA中期", minval=1)
 ema_long = input.int(40, "EMA長期", minval=1)
 
 // MACD設定（1時間足ダイバージェンス）
-macd_fast = input.int(12, "MACD Fast", minval=1)
-macd_slow = input.int(26, "MACD Slow", minval=1)
-macd_signal = input.int(9, "MACD Signal", minval=1)
+macd_fast = input.int(6, "MACD Fast", minval=1)
+macd_slow = input.int(13, "MACD Slow", minval=1)
+macd_signal = input.int(4, "MACD Signal", minval=1)
 
 // ZigZag設定
 zigzag_depth_5m = input.int(5, "ZigZag 5分足 Depth", minval=1)
