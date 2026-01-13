@@ -1,0 +1,210 @@
+//@version=6
+indicator("sukepoyo sub", overlay=true, max_lines_count=500)
+
+// ==========================================
+// 1本目の設定 (ZigZag Main)
+// ==========================================
+d1_show      = input.bool(true, 'Show ZigZag 1', group="ZigZag 1 (Main)")
+d1_depth     = input.int(12, 'Depth', minval=1, group="ZigZag 1 (Main)")
+d1_deviation = input.int(5, 'Deviation (Points)', minval=1, group="ZigZag 1 (Main)")
+d1_backstep  = input.int(3, 'Backstep', minval=1, group="ZigZag 1 (Main)")
+d1_color     = input.color(color.white, 'Line Color', group="ZigZag 1 (Main)")
+d1_width     = input.int(2, 'Line Thickness', minval=1, group="ZigZag 1 (Main)")
+
+// ==========================================
+// 2本目の設定 (ZigZag Fast)
+// ==========================================
+d2_show      = input.bool(true, 'Show ZigZag 2', group="ZigZag 2 (Fast)")
+d2_depth     = input.int(5, 'Depth', minval=1, group="ZigZag 2 (Fast)")
+d2_deviation = input.int(3, 'Deviation (Points)', minval=1, group="ZigZag 2 (Fast)")
+d2_backstep  = input.int(2, 'Backstep', minval=1, group="ZigZag 2 (Fast)")
+d2_color     = input.color(color.fuchsia, 'Line Color', group="ZigZag 2 (Fast)")
+d2_width     = input.int(2, 'Line Thickness', minval=1, group="ZigZag 2 (Fast)")
+
+// ==========================================
+// EMAの設定
+// ==========================================
+grp_ema = "EMA Settings"
+show_ema = input.bool(true, "Show EMAs", group=grp_ema)
+
+ema1_len = input.int(20, "EMA 1 Length", group=grp_ema) // Fill対象
+ema1_col = input.color(color.red, "EMA 1 Color", group=grp_ema)
+
+ema2_len = input.int(30, "EMA 2 Length", group=grp_ema)
+ema2_col = input.color(color.blue, "EMA 2 Color", group=grp_ema)
+
+ema3_len = input.int(40, "EMA 3 Length", group=grp_ema) // Fill対象
+ema3_col = input.color(color.yellow, "EMA 3 Color", group=grp_ema)
+
+ema4_len = input.int(75, "EMA 4 Length", group=grp_ema)
+ema4_col = input.color(color.green, "EMA 4 Color", group=grp_ema)
+
+ema5_len = input.int(200, "EMA 5 Length", group=grp_ema)
+ema5_col = input.color(color.purple, "EMA 5 Color", group=grp_ema)
+
+// ==========================================
+// トレンド強度 (5段階 & 塗りつぶし)
+// ==========================================
+grp_trend = "Trend Strength (5 Levels & Fill)"
+show_trend_bar = input.bool(true, "Show Bottom Bar", group=grp_trend)
+show_fill      = input.bool(true, "Fill EMA 20-40", group=grp_trend)
+
+// 感度設定
+trend_max_mult = input.float(2.0, "Level 5 Threshold (ATR Multiplier)", minval=0.5, step=0.1, tooltip="EMA間隔がATRのこの倍率に達するとレベル5（最強）になります", group=grp_trend)
+
+// 色設定 (Base Colors)
+base_col_up = input.color(color.lime, "Up Trend Base Color", group=grp_trend)
+base_col_dn = input.color(color.red, "Down Trend Base Color", group=grp_trend)
+
+
+// ==========================================
+// 計算関数 (ZigZag)
+// ==========================================
+// --- ZigZag 1 ---
+float d1_dev_th = d1_deviation * syminfo.mintick
+int d1_hb = ta.highestbars(d1_depth)
+int d1_lb = ta.lowestbars(d1_depth)
+d1_hr = ta.barssince(not (high[-d1_hb] - high > d1_dev_th)[1])
+d1_lr = ta.barssince(not (low - low[-d1_lb] > d1_dev_th)[1])
+d1_dir = ta.barssince(not (d1_hr > d1_lr)) >= d1_backstep ? -1 : 1
+
+var chart.point z_A = chart.point.now(low)
+var chart.point z1_A = chart.point.now(low)
+var chart.point z2_A = chart.point.now(high)
+
+if d1_dir != d1_dir[1]
+    z1_A := z2_A.copy()
+    z2_A := z_A.copy()
+
+if d1_dir > 0
+    if high > z2_A.price
+        z2_A := chart.point.now(high)
+        z_A := chart.point.now(low)
+    if low < z_A.price
+        z_A := chart.point.now(low)
+else if d1_dir < 0
+    if low < z2_A.price
+        z2_A := chart.point.now(low)
+        z_B := chart.point.now(high)
+    if high > z_A.price
+        z_A := chart.point.now(high)
+
+// --- ZigZag 2 ---
+float d2_dev_th = d2_deviation * syminfo.mintick
+int d2_hb = ta.highestbars(d2_depth)
+int d2_lb = ta.lowestbars(d2_depth)
+d2_hr = ta.barssince(not (high[-d2_hb] - high > d2_dev_th)[1])
+d2_lr = ta.barssince(not (low - low[-d2_lb] > d2_dev_th)[1])
+d2_dir = ta.barssince(not (d2_hr > d2_lr)) >= d2_backstep ? -1 : 1
+
+var chart.point z_B = chart.point.now(low)
+var chart.point z1_B = chart.point.now(low)
+var chart.point z2_B = chart.point.now(high)
+
+if d2_dir != d2_dir[1]
+    z1_B := z2_B.copy()
+    z2_B := z_B.copy()
+
+if d2_dir > 0
+    if high > z2_B.price
+        z2_B := chart.point.now(high)
+        z_B := chart.point.now(low)
+    if low < z_B.price
+        z_B := chart.point.now(low)
+else if d2_dir < 0
+    if low < z2_B.price
+        z2_B := chart.point.now(low)
+        z_B := chart.point.now(high)
+    if high > z_B.price
+        z_B := chart.point.now(high)
+
+
+// ==========================================
+// 計算処理 (EMA & 5-Level Trend)
+// ==========================================
+e1 = ta.ema(close, ema1_len) // 20
+e2 = ta.ema(close, ema2_len) // 30
+e3 = ta.ema(close, ema3_len) // 40
+e4 = ta.ema(close, ema4_len) // 75
+e5 = ta.ema(close, ema5_len) // 200
+
+// ATR (正規化用)
+atr_val = ta.atr(14)
+
+// パーフェクトオーダー判定
+bool is_po_up = (e1 > e2) and (e2 > e3)
+bool is_po_dn = (e1 < e2) and (e2 < e3)
+
+// 強度比率計算
+float spread = math.abs(e1 - e3)
+float strength_ratio = atr_val > 0 ? spread / atr_val : 0
+
+// 5段階レベルの算出 (1〜5)
+// 最大値(trend_max_mult)に対して何%かでレベル分け
+// Lv1: 0-20%, Lv2: 20-40%, ... Lv5: 80-100%以上
+float normalized = math.min(strength_ratio / trend_max_mult, 1.0) // 1.0上限
+int level = 0
+if normalized > 0
+    level := math.ceil(normalized * 5) // 0.1 -> 1, 0.9 -> 5
+
+// 色の決定ロジック (透明度で強度を表現)
+// レベルが高いほど透明度(transp)を下げる = 色を濃くする
+color trend_color = na
+int transp = 90 // Default (透明に近い)
+
+if level == 1
+    transp := 85 // 薄い
+else if level == 2
+    transp := 70
+else if level == 3
+    transp := 50
+else if level == 4
+    transp := 30
+else if level == 5
+    transp := 10 // 濃い
+
+// トレンド方向による色分け
+if is_po_up
+    trend_color := color.new(base_col_up, transp)
+else if is_po_dn
+    trend_color := color.new(base_col_dn, transp)
+else
+    trend_color := na // レンジは色なし
+
+
+// ==========================================
+// 描画処理 (ZigZag)
+// ==========================================
+var line zz_line_1 = na
+if d1_dir == d1_dir[1]
+    line.delete(zz_line_1[1])
+if d1_show
+    zz_line_1 := line.new(z1_A.time, z1_A.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, d1_color, line.style_solid, d1_width)
+
+var line zz_line_2 = na
+if d2_dir == d2_dir[1]
+    line.delete(zz_line_2[1])
+if d2_show
+    zz_line_2 := line.new(z1_B.time, z1_B.price, z2_B.time, z2_B.price, xloc.bar_time, extend.none, d2_color, line.style_solid, d2_width)
+
+
+// ==========================================
+// 描画処理 (EMA & Fill)
+// ==========================================
+// Plot IDを取得して塗りつぶしに使用
+p_e1 = plot(show_ema ? e1 : na, "EMA 20",  ema1_col, 1)
+plot(show_ema ? e2 : na, "EMA 30",  ema2_col, 1)
+p_e3 = plot(show_ema ? e3 : na, "EMA 40",  ema3_col, 1)
+plot(show_ema ? e4 : na, "EMA 75",  ema4_col, 1)
+plot(show_ema ? e5 : na, "EMA 200", ema5_col, 1)
+
+// EMA 20と40の間を塗りつぶし
+// show_fillがオンで、かつトレンドカラーが存在する場合のみ塗る
+fill(p_e1, p_e3, color = show_fill ? trend_color : na, title="Trend Fill")
+
+
+// ==========================================
+// 描画処理 (Trend Strength Bar)
+// ==========================================
+// Fillと同じ色を使って下部バーを表示
+plotshape(show_trend_bar, title="Trend Strength Level", style=shape.square, location=location.bottom, color=trend_color, size=size.small, offset=0)
