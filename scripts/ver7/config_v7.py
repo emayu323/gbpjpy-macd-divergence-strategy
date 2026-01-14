@@ -39,9 +39,10 @@ RCI_MID_OVERBOUGHT = 40   # 買われすぎ（中期用）Ver7で追加
 RCI_MID_OVERSOLD = -40    # 売られすぎ（中期用）Ver7で追加
 
 # EMA (Exponential Moving Average) - 4時間足トレンド判定用
-EMA_SHORT = 20
-EMA_MID = 30
-EMA_LONG = 40
+# Ver7最適化版: 50EMA単独判定（価格 > 50EMA で上昇トレンド）
+EMA_SHORT = 50   # トレンド判定に使用
+EMA_MID = 75     # 未使用（互換性のため保持）
+EMA_LONG = 200   # 未使用（互換性のため保持）
 
 # MACD (Moving Average Convergence Divergence) - 1時間足ダイバージェンス検出用
 MACD_FAST = 6       # 短期EMA

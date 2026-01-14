@@ -14,9 +14,10 @@ rci_mid_oversold = input.int(-40, "RCI中期売られすぎ", maxval=0)
 rci_mid_overbought = input.int(40, "RCI中期買われすぎ", minval=0)
 
 // EMA設定（4時間足トレンド判定）
-ema_short = input.int(20, "EMA短期", minval=1)
-ema_mid = input.int(30, "EMA中期", minval=1)
-ema_long = input.int(40, "EMA長期", minval=1)
+// Ver7最適化版: 50EMA単独判定
+ema_short = input.int(50, "EMA (トレンド判定)", minval=1)
+ema_mid = input.int(75, "EMA中期（未使用）", minval=1)
+ema_long = input.int(200, "EMA長期（未使用）", minval=1)
 
 // MACD設定（1時間足ダイバージェンス）
 macd_fast = input.int(6, "MACD Fast", minval=1)
@@ -70,10 +71,11 @@ rci(src, length) =>
 // 上位足データ取得
 // ==========================================
 
-// 4時間足のEMA
-ema_20_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_short))
-ema_30_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_mid))
-ema_40_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_long))
+// 4時間足のEMAと価格
+ema_50_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_short))
+close_4h = request.security(syminfo.tickerid, "240", close)
+ema_30_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_mid))  // 未使用
+ema_40_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_long))  // 未使用
 
 // 1時間足のMACD
 [macd_line_1h, signal_line_1h, hist_1h] = request.security(syminfo.tickerid, "60", ta.macd(close, macd_fast, macd_slow, macd_signal))
@@ -109,11 +111,12 @@ if not na(is_pivot_low)
     last_pivot := -1
 
 // ==========================================
-// 4時間足トレンド判定
+// 4時間足トレンド判定（50EMA単独）
 // ==========================================
 
-trend_4h = ema_20_4h > ema_30_4h and ema_30_4h > ema_40_4h ? 1 :
-           ema_20_4h < ema_30_4h and ema_30_4h < ema_40_4h ? -1 : 0
+// Ver7最適化版: 価格 vs 50EMA の単独比較
+trend_4h = close_4h > ema_50_4h ? 1 :
+           close_4h < ema_50_4h ? -1 : 0
 
 trend_4h_uptrend = trend_4h == 1
 trend_4h_downtrend = trend_4h == -1

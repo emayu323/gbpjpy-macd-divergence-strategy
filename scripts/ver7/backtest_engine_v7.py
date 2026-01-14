@@ -90,6 +90,9 @@ class BacktestEngineV7:
         self.df_1h['ZZ_High'] = zz_highs_1h
         self.df_1h['ZZ_Low'] = zz_lows_1h
 
+        # 1時間足のEMA（パターンC用）
+        self.df_1h['EMA_200'] = calculate_ema(self.df_1h, 200)
+
         # 4時間足のEMA
         self.df_4h['EMA_20'] = calculate_ema(self.df_4h, config.EMA_SHORT)
         self.df_4h['EMA_30'] = calculate_ema(self.df_4h, config.EMA_MID)
@@ -112,12 +115,16 @@ class BacktestEngineV7:
         return self.df_4h[mask].iloc[-1]
 
     def _check_4h_trend(self, data_4h: pd.Series) -> str:
-        """4時間足のトレンドをチェック"""
-        return check_perfect_order(
-            data_4h['EMA_20'],
-            data_4h['EMA_30'],
-            data_4h['EMA_40']
-        )
+        """4時間足のトレンドをチェック（4時間足50EMA単独）"""
+        # パターンA: 価格とEMA_20（50EMA）の単独比較
+        if pd.isna(data_4h['Close']) or pd.isna(data_4h['EMA_20']):
+            return 'none'
+        if data_4h['Close'] > data_4h['EMA_20']:
+            return 'uptrend'
+        elif data_4h['Close'] < data_4h['EMA_20']:
+            return 'downtrend'
+        else:
+            return 'none'
 
     def _update_divergences(self, current_time: pd.Timestamp, trend_4h: str):
         """
