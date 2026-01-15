@@ -1,6 +1,7 @@
 """
-System Ver7 - バックテストエンジン
+System Ver8 - バックテストエンジン
 MACDダイバージェンス戦略のバックテスト実行
+Ver8: 1時間足パーフェクトオーダー（20/30/40 EMA）追加
 """
 
 import pandas as pd
@@ -9,8 +10,8 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-import config_v7 as config
-from indicators_v7 import (
+import config_v8 as config
+from indicators_v8 import (
     calculate_rci, calculate_ema, calculate_macd, calculate_zigzag, calculate_atr,
     get_latest_zigzag_level, check_perfect_order,
     check_5m_entry_long_v7, check_5m_entry_short_v7
@@ -33,8 +34,8 @@ class Trade:
     divergence_type: str  # 'hidden' or 'regular'
 
 
-class BacktestEngineV7:
-    """System Ver7 バックテストエンジン"""
+class BacktestEngineV8:
+    """System Ver8 バックテストエンジン - 1時間足パーフェクトオーダー追加"""
 
     def __init__(self, df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFrame):
         self.df_5m = df_5m.copy()
@@ -102,10 +103,13 @@ class BacktestEngineV7:
         # 1時間足のEMA（パターンC用）
         self.df_1h['EMA_200'] = calculate_ema(self.df_1h, 200)
 
+        # 1時間足のEMA（Ver8: パーフェクトオーダー用）
+        self.df_1h['EMA_20'] = calculate_ema(self.df_1h, config.EMA_1H_SHORT)
+        self.df_1h['EMA_30'] = calculate_ema(self.df_1h, config.EMA_1H_MID)
+        self.df_1h['EMA_40'] = calculate_ema(self.df_1h, config.EMA_1H_LONG)
+
         # 4時間足のEMA
-        self.df_4h['EMA_20'] = calculate_ema(self.df_4h, config.EMA_SHORT)
-        self.df_4h['EMA_30'] = calculate_ema(self.df_4h, config.EMA_MID)
-        self.df_4h['EMA_40'] = calculate_ema(self.df_4h, config.EMA_LONG)
+        self.df_4h['EMA_50'] = calculate_ema(self.df_4h, config.EMA_4H)
 
         print("インジケーター計算完了")
 
@@ -125,15 +129,23 @@ class BacktestEngineV7:
 
     def _check_4h_trend(self, data_4h: pd.Series) -> str:
         """4時間足のトレンドをチェック（4時間足50EMA単独）"""
-        # パターンA: 価格とEMA_20（50EMA）の単独比較
-        if pd.isna(data_4h['Close']) or pd.isna(data_4h['EMA_20']):
+        if pd.isna(data_4h['Close']) or pd.isna(data_4h['EMA_50']):
             return 'none'
-        if data_4h['Close'] > data_4h['EMA_20']:
+        if data_4h['Close'] > data_4h['EMA_50']:
             return 'uptrend'
-        elif data_4h['Close'] < data_4h['EMA_20']:
+        elif data_4h['Close'] < data_4h['EMA_50']:
             return 'downtrend'
         else:
             return 'none'
+
+    def _check_1h_perfect_order(self, data_1h: pd.Series) -> str:
+        """1時間足のパーフェクトオーダーをチェック（Ver8追加）"""
+        if data_1h is None:
+            return 'none'
+        ema_20 = data_1h.get('EMA_20', np.nan)
+        ema_30 = data_1h.get('EMA_30', np.nan)
+        ema_40 = data_1h.get('EMA_40', np.nan)
+        return check_perfect_order(ema_20, ema_30, ema_40)
 
     def _update_divergences(self, current_time: pd.Timestamp, trend_4h: str):
         """
@@ -362,13 +374,21 @@ class BacktestEngineV7:
                 if trend_4h == 'none':
                     continue
 
-                # 買いエントリーチェック
-                if trend_4h == 'uptrend' and self._get_active_setup(current_time, 'long'):
+                # Ver8: 1時間足パーフェクトオーダーをチェック
+                data_1h = self._get_1h_data_at_time(current_time)
+                perfect_order_1h = self._check_1h_perfect_order(data_1h)
+
+                # 買いエントリーチェック（4H上昇トレンド + 1Hパーフェクトオーダー上昇）
+                if (trend_4h == 'uptrend' and
+                    perfect_order_1h == 'uptrend' and
+                    self._get_active_setup(current_time, 'long')):
                     if self._check_5m_entry(idx, 'long'):
                         self._open_position(idx, 'long')
 
-                # 売りエントリーチェック
-                elif trend_4h == 'downtrend' and self._get_active_setup(current_time, 'short'):
+                # 売りエントリーチェック（4H下降トレンド + 1Hパーフェクトオーダー下降）
+                elif (trend_4h == 'downtrend' and
+                      perfect_order_1h == 'downtrend' and
+                      self._get_active_setup(current_time, 'short')):
                     if self._check_5m_entry(idx, 'short'):
                         self._open_position(idx, 'short')
 

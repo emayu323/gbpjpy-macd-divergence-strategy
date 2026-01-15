@@ -1,12 +1,15 @@
 """
-System Ver7 - MACD Divergence Strategy 設定ファイル
-ENTRY_LOGIC.md (Ver7) に基づくバックテスト設定
+System Ver15 - MACD Divergence Strategy 設定ファイル
+Ver15: 暫定ピボット方式によるリアルタイムダイバージェンス検出
+       （12本確定を待たずに最新のローソク足を暫定先端として使用）
 """
 
 # ==========================================
 # データファイルパス
 # ==========================================
-DATA_DIR = "./ローソク足データ"
+from pathlib import Path
+_PROJECT_ROOT = Path(__file__).parent.parent.parent  # scripts/ver15 -> scripts -> プロジェクトルート
+DATA_DIR = str(_PROJECT_ROOT / "ローソク足データ")
 DATA_5M = f"{DATA_DIR}/GBPJPY_5M_2015-2025.csv"
 DATA_1H = f"{DATA_DIR}/GBPJPY_1H_2013-2025.csv"
 DATA_4H = f"{DATA_DIR}/GBPJPY_4H_2013-2025.csv"
@@ -34,17 +37,27 @@ TRADING_END_HOUR = 24    # 日本時間 24:00 (0:00)
 RCI_SHORT = 9   # 短期
 RCI_MID = 14    # 中期
 
-# RCI閾値（Ver7で変更）
+# RCI閾値
 RCI_OVERBOUGHT = 60       # 買われすぎ（短期用）
 RCI_OVERSOLD = -60        # 売られすぎ（短期用）
-RCI_MID_OVERBOUGHT = 40   # 買われすぎ（中期用）Ver7で追加
-RCI_MID_OVERSOLD = -40    # 売られすぎ（中期用）Ver7で追加
+RCI_MID_OVERBOUGHT = 40   # 買われすぎ（中期用）
+RCI_MID_OVERSOLD = -40    # 売られすぎ（中期用）
+
+# 1時間足RCI閾値
+RCI_1H_THRESHOLD = 60     # 1時間足RCI短期の閾値
 
 # EMA (Exponential Moving Average) - 4時間足トレンド判定用
-# Ver7最適化版: 50EMA単独判定（価格 > 50EMA で上昇トレンド）
-EMA_SHORT = 50   # トレンド判定に使用
-EMA_MID = 75     # 未使用（互換性のため保持）
-EMA_LONG = 200   # 未使用（互換性のため保持）
+EMA_4H = 50   # 4時間足トレンド判定に使用
+
+# EMA (1時間足パーフェクトオーダー用)
+EMA_1H_SHORT = 20   # 1時間足短期EMA
+EMA_1H_MID = 30     # 1時間足中期EMA
+EMA_1H_LONG = 40    # 1時間足長期EMA
+
+# EMA (5分足パーフェクトオーダー用)
+EMA_5M_SHORT = 20   # 5分足短期EMA
+EMA_5M_MID = 30     # 5分足中期EMA
+EMA_5M_LONG = 40    # 5分足長期EMA
 
 # MACD (Moving Average Convergence Divergence) - 1時間足ダイバージェンス検出用
 MACD_FAST = 6       # 短期EMA
@@ -52,7 +65,9 @@ MACD_SLOW = 13      # 長期EMA
 MACD_SIGNAL = 4     # シグナルライン
 
 # ZigZag - ダイバージェンス検出用（1時間足）
-ZIGZAG_1H_DEPTH = 12      # Ver7: Depth 12でダイバージェンス検出
+# Ver15: 暫定ピボット方式のため、DEPTHは確定までの遅延ではなく
+#        ZigZagの感度パラメータとしてのみ機能
+ZIGZAG_1H_DEPTH = 12      # Depth 12（感度設定）
 ZIGZAG_1H_DEVIATION = 5
 ZIGZAG_1H_BACKSTEP = 3
 
@@ -66,6 +81,11 @@ ZIGZAG_5M_BACKSTEP = 2
 # ==========================================
 DIVERGENCE_VALID_HOURS = 12  # ダイバージェンス有効期間（時間）
 
+# Ver15: 暫定ピボットモード
+# True: 暫定先端を使用（リアルタイム検出）
+# False: 確定ピボットのみ使用（従来方式）
+USE_PROSPECTIVE_PIVOT = True
+
 # ==========================================
 # リスク管理
 # ==========================================
@@ -78,7 +98,7 @@ ENABLE_1DIV1ENTRY = True
 SL_BUFFER_PIPS = 2       # ZigZag高値/安値からのバッファ（pips）
 SL_DEFAULT_PIPS = 20     # ZigZagが見つからない場合のデフォルトSL幅
 
-# ATRベースSL設定（Pineと一致）
+# ATRベースSL設定
 SL_ATR_LENGTH = 14
 SL_ATR_MULT = 1.0
 SL_FALLBACK_ATR_MULT = 2.0
@@ -90,17 +110,16 @@ SPREAD_PIPS = 0.5        # 想定スプレッド（pips）
 # ==========================================
 # バックテスト期間
 # ==========================================
-# 5分足データの期間に合わせる（2015-2025）
 BACKTEST_START = "2015-11-15"
 BACKTEST_END = "2025-11-24"
 
 # ==========================================
 # 出力設定
 # ==========================================
-RESULTS_DIR = "./results_v7"
-REPORT_FILE = f"{RESULTS_DIR}/backtest_report_v7.txt"
-TRADES_CSV = f"{RESULTS_DIR}/trades_v7.csv"
-DIVERGENCES_CSV = f"{RESULTS_DIR}/divergences_v7.csv"  # ダイバージェンス記録
+RESULTS_DIR = "./results_v15"
+REPORT_FILE = f"{RESULTS_DIR}/backtest_report_v15.txt"
+TRADES_CSV = f"{RESULTS_DIR}/trades_v15.csv"
+DIVERGENCES_CSV = f"{RESULTS_DIR}/divergences_v15.csv"
 
 # ==========================================
 # その他

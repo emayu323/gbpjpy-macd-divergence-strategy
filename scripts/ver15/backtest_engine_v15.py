@@ -1,7 +1,15 @@
 """
-System Ver7 - バックテストエンジン
+System Ver15 - バックテストエンジン
 MACDダイバージェンス戦略のバックテスト実行
+Ver15: 暫定ピボット方式によるリアルタイムダイバージェンス検出
+       （12本確定を待たずに最新のローソク足を暫定先端として使用）
 """
+
+import sys
+from pathlib import Path
+
+# 親ディレクトリをパスに追加（共通indicatorsモジュール参照用）
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
 import numpy as np
@@ -9,11 +17,15 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-import config_v7 as config
-from indicators_v7 import (
-    calculate_rci, calculate_ema, calculate_macd, calculate_zigzag, calculate_atr,
-    get_latest_zigzag_level, check_perfect_order,
-    check_5m_entry_long_v7, check_5m_entry_short_v7
+import config_v15 as config
+
+# 共通indicatorsモジュールからインポート
+from indicators import (
+    calculate_rci, calculate_ema, calculate_macd,
+    calculate_zigzag, calculate_zigzag_with_prospective, calculate_atr,
+    get_latest_zigzag_level, check_perfect_order, check_1h_rci_condition,
+    check_5m_entry_long as check_5m_entry_long_v15,  # エイリアスで互換性維持
+    check_5m_entry_short as check_5m_entry_short_v15  # エイリアスで互換性維持
 )
 
 
@@ -33,8 +45,8 @@ class Trade:
     divergence_type: str  # 'hidden' or 'regular'
 
 
-class BacktestEngineV7:
-    """System Ver7 バックテストエンジン"""
+class BacktestEngineV15:
+    """System Ver15 バックテストエンジン - 暫定ピボット方式"""
 
     def __init__(self, df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFrame):
         self.df_5m = df_5m.copy()
@@ -49,12 +61,14 @@ class BacktestEngineV7:
         self.current_divergence: Optional[Dict] = None
         self.current_divergence_used = False
 
-        self.prev_low = np.nan
-        self.prev_high = np.nan
-        self.prev_macd_at_low = np.nan
-        self.prev_macd_at_high = np.nan
-        self.prev_low_idx: Optional[int] = None
-        self.prev_high_idx: Optional[int] = None
+        # Ver15: 暫定ピボット用の前回値を追跡
+        self.prev_prospective_low = np.nan
+        self.prev_prospective_low_idx = np.nan
+        self.prev_macd_at_prospective_low = np.nan
+
+        self.prev_prospective_high = np.nan
+        self.prev_prospective_high_idx = np.nan
+        self.prev_macd_at_prospective_high = np.nan
 
         # インジケーター計算
         self._calculate_indicators()
@@ -78,6 +92,11 @@ class BacktestEngineV7:
         self.df_5m['ZZ_Low'] = zz_lows_5m
         self.df_5m['ATR'] = calculate_atr(self.df_5m, config.SL_ATR_LENGTH)
 
+        # 5分足のEMA（パーフェクトオーダー用）
+        self.df_5m['EMA_20'] = calculate_ema(self.df_5m, config.EMA_5M_SHORT)
+        self.df_5m['EMA_30'] = calculate_ema(self.df_5m, config.EMA_5M_MID)
+        self.df_5m['EMA_40'] = calculate_ema(self.df_5m, config.EMA_5M_LONG)
+
         # 1時間足のMACD
         macd_line, signal_line, histogram = calculate_macd(
             self.df_1h,
@@ -89,8 +108,10 @@ class BacktestEngineV7:
         self.df_1h['MACD_Signal'] = signal_line
         self.df_1h['MACD_Hist'] = histogram
 
-        # 1時間足のZigZag（ダイバージェンス検出用）
-        zz_highs_1h, zz_lows_1h = calculate_zigzag(
+        # Ver15: 1時間足のZigZag（暫定ピボット対応）
+        (zz_highs_1h, zz_lows_1h,
+         prospective_high, prospective_low,
+         prospective_high_idx, prospective_low_idx) = calculate_zigzag_with_prospective(
             self.df_1h,
             depth=config.ZIGZAG_1H_DEPTH,
             deviation=config.ZIGZAG_1H_DEVIATION,
@@ -98,53 +119,78 @@ class BacktestEngineV7:
         )
         self.df_1h['ZZ_High'] = zz_highs_1h
         self.df_1h['ZZ_Low'] = zz_lows_1h
+        self.df_1h['Prospective_High'] = prospective_high
+        self.df_1h['Prospective_Low'] = prospective_low
+        self.df_1h['Prospective_High_Idx'] = prospective_high_idx
+        self.df_1h['Prospective_Low_Idx'] = prospective_low_idx
 
-        # 1時間足のEMA（パターンC用）
+        # 1時間足のEMA
         self.df_1h['EMA_200'] = calculate_ema(self.df_1h, 200)
+        self.df_1h['EMA_20'] = calculate_ema(self.df_1h, config.EMA_1H_SHORT)
+        self.df_1h['EMA_30'] = calculate_ema(self.df_1h, config.EMA_1H_MID)
+        self.df_1h['EMA_40'] = calculate_ema(self.df_1h, config.EMA_1H_LONG)
+
+        # 1時間足のRCI
+        self.df_1h['RCI_9'] = calculate_rci(self.df_1h, config.RCI_SHORT)
 
         # 4時間足のEMA
-        self.df_4h['EMA_20'] = calculate_ema(self.df_4h, config.EMA_SHORT)
-        self.df_4h['EMA_30'] = calculate_ema(self.df_4h, config.EMA_MID)
-        self.df_4h['EMA_40'] = calculate_ema(self.df_4h, config.EMA_LONG)
+        self.df_4h['EMA_50'] = calculate_ema(self.df_4h, config.EMA_4H)
 
-        print("インジケーター計算完了")
+        print(f"  5分足データ: {len(self.df_5m)} 件")
+        print(f"  1時間足データ: {len(self.df_1h)} 件")
+        print(f"  4時間足データ: {len(self.df_4h)} 件")
 
-    def _get_1h_data_at_time(self, timestamp: pd.Timestamp) -> Optional[pd.Series]:
-        """指定時刻の1時間足データを取得"""
-        mask = self.df_1h.index <= timestamp
-        if mask.sum() == 0:
-            return None
-        return self.df_1h[mask].iloc[-1]
-
-    def _get_4h_data_at_time(self, timestamp: pd.Timestamp) -> Optional[pd.Series]:
+    def _get_4h_data_at_time(self, current_time: pd.Timestamp) -> Optional[pd.Series]:
         """指定時刻の4時間足データを取得"""
-        mask = self.df_4h.index <= timestamp
+        mask = self.df_4h.index <= current_time
         if mask.sum() == 0:
             return None
-        return self.df_4h[mask].iloc[-1]
+        return self.df_4h.loc[mask].iloc[-1]
+
+    def _get_1h_data_at_time(self, current_time: pd.Timestamp) -> Optional[Dict]:
+        """指定時刻の1時間足データを取得"""
+        mask = self.df_1h.index <= current_time
+        if mask.sum() == 0:
+            return None
+        row = self.df_1h.loc[mask].iloc[-1]
+        return row.to_dict()
 
     def _check_4h_trend(self, data_4h: pd.Series) -> str:
-        """4時間足のトレンドをチェック（4時間足50EMA単独）"""
-        # パターンA: 価格とEMA_20（50EMA）の単独比較
-        if pd.isna(data_4h['Close']) or pd.isna(data_4h['EMA_20']):
+        """4時間足のトレンドを判定（50EMA単独判定）"""
+        if data_4h is None:
             return 'none'
-        if data_4h['Close'] > data_4h['EMA_20']:
+        close = data_4h['Close']
+        ema_50 = data_4h.get('EMA_50', np.nan)
+        if pd.isna(ema_50):
+            return 'none'
+        if close > ema_50:
             return 'uptrend'
-        elif data_4h['Close'] < data_4h['EMA_20']:
+        elif close < ema_50:
             return 'downtrend'
-        else:
+        return 'none'
+
+    def _check_1h_perfect_order(self, data_1h: Dict) -> str:
+        """1時間足のパーフェクトオーダーをチェック"""
+        if data_1h is None:
             return 'none'
+        ema_20 = data_1h.get('EMA_20', np.nan)
+        ema_30 = data_1h.get('EMA_30', np.nan)
+        ema_40 = data_1h.get('EMA_40', np.nan)
+        return check_perfect_order(ema_20, ema_30, ema_40)
+
+    def _check_1h_rci(self, data_1h: Dict, direction: str) -> bool:
+        """1時間足RCI条件をチェック"""
+        if data_1h is None:
+            return False
+        rci_value = data_1h.get('RCI_9', np.nan)
+        return check_1h_rci_condition(rci_value, direction, config.RCI_1H_THRESHOLD)
 
     def _update_divergences(self, current_time: pd.Timestamp, trend_4h: str):
         """
-        ダイバージェンスを検出・更新
+        Ver15: 暫定ピボット方式でダイバージェンスを検出・更新
 
-        Parameters:
-        -----------
-        current_time : pd.Timestamp
-            現在時刻
-        trend_4h : str
-            4時間足のトレンド
+        12本確定を待たずに、各バーでの暫定先端を使ってダイバージェンスを検出。
+        暫定先端が更新されるたびにダイバージェンスを再評価。
         """
         # 1時間足のインデックスを取得
         mask_1h = self.df_1h.index <= current_time
@@ -152,34 +198,73 @@ class BacktestEngineV7:
             return
 
         idx_1h = mask_1h.sum() - 1
-        pivot_idx = idx_1h - config.ZIGZAG_1H_DEPTH
-        if pivot_idx < 0:
-            return
 
-        zz_high = self.df_1h['ZZ_High'].iloc[pivot_idx]
-        zz_low = self.df_1h['ZZ_Low'].iloc[pivot_idx]
-        macd_at_pivot = self.df_1h['MACD'].iloc[pivot_idx]
+        # Ver15: 暫定先端を使用
+        current_prospective_low = self.df_1h['Prospective_Low'].iloc[idx_1h]
+        current_prospective_low_idx = self.df_1h['Prospective_Low_Idx'].iloc[idx_1h]
+        current_prospective_high = self.df_1h['Prospective_High'].iloc[idx_1h]
+        current_prospective_high_idx = self.df_1h['Prospective_High_Idx'].iloc[idx_1h]
 
-        if not pd.isna(zz_low) and self.prev_low_idx != pivot_idx:
-            if not pd.isna(self.prev_low):
-                if zz_low > self.prev_low and macd_at_pivot < self.prev_macd_at_low and trend_4h == 'uptrend':
-                    self._set_divergence(current_time, 'hidden', 'long', zz_low, macd_at_pivot)
-                elif zz_low < self.prev_low and macd_at_pivot > self.prev_macd_at_low:
-                    self._set_divergence(current_time, 'regular', 'long', zz_low, macd_at_pivot)
-            self.prev_low = zz_low
-            self.prev_macd_at_low = macd_at_pivot
-            self.prev_low_idx = pivot_idx
+        # 暫定先端のインデックスでMACDを取得
+        if not pd.isna(current_prospective_low_idx):
+            low_idx = int(current_prospective_low_idx)
+            current_macd_at_low = self.df_1h['MACD'].iloc[low_idx]
+        else:
+            current_macd_at_low = np.nan
 
-        if not pd.isna(zz_high) and self.prev_high_idx != pivot_idx:
-            if not pd.isna(self.prev_high):
-                if zz_high < self.prev_high and macd_at_pivot > self.prev_macd_at_high and trend_4h == 'downtrend':
-                    self._set_divergence(current_time, 'hidden', 'short', zz_high, macd_at_pivot)
-                elif zz_high > self.prev_high and macd_at_pivot < self.prev_macd_at_high:
-                    self._set_divergence(current_time, 'regular', 'short', zz_high, macd_at_pivot)
-            self.prev_high = zz_high
-            self.prev_macd_at_high = macd_at_pivot
-            self.prev_high_idx = pivot_idx
+        if not pd.isna(current_prospective_high_idx):
+            high_idx = int(current_prospective_high_idx)
+            current_macd_at_high = self.df_1h['MACD'].iloc[high_idx]
+        else:
+            current_macd_at_high = np.nan
 
+        # 安値の暫定先端が更新された場合、ダイバージェンスをチェック
+        if (not pd.isna(current_prospective_low) and
+            not pd.isna(current_prospective_low_idx) and
+            current_prospective_low_idx != self.prev_prospective_low_idx):
+
+            if not pd.isna(self.prev_prospective_low) and not pd.isna(self.prev_macd_at_prospective_low):
+                # ヒドゥン買い: 価格が切り上げ（押し目）、MACDが切り下げ
+                if (current_prospective_low > self.prev_prospective_low and
+                    current_macd_at_low < self.prev_macd_at_prospective_low):
+                    self._set_divergence(current_time, 'hidden', 'long',
+                                        current_prospective_low, current_macd_at_low)
+
+                # レギュラー買い: 価格が切り下げ、MACDが切り上げ
+                elif (current_prospective_low < self.prev_prospective_low and
+                      current_macd_at_low > self.prev_macd_at_prospective_low):
+                    self._set_divergence(current_time, 'regular', 'long',
+                                        current_prospective_low, current_macd_at_low)
+
+            # 前回値を更新
+            self.prev_prospective_low = current_prospective_low
+            self.prev_prospective_low_idx = current_prospective_low_idx
+            self.prev_macd_at_prospective_low = current_macd_at_low
+
+        # 高値の暫定先端が更新された場合、ダイバージェンスをチェック
+        if (not pd.isna(current_prospective_high) and
+            not pd.isna(current_prospective_high_idx) and
+            current_prospective_high_idx != self.prev_prospective_high_idx):
+
+            if not pd.isna(self.prev_prospective_high) and not pd.isna(self.prev_macd_at_prospective_high):
+                # ヒドゥン売り: 価格が切り下げ（戻り目）、MACDが切り上げ
+                if (current_prospective_high < self.prev_prospective_high and
+                    current_macd_at_high > self.prev_macd_at_prospective_high):
+                    self._set_divergence(current_time, 'hidden', 'short',
+                                        current_prospective_high, current_macd_at_high)
+
+                # レギュラー売り: 価格が切り上げ、MACDが切り下げ
+                elif (current_prospective_high > self.prev_prospective_high and
+                      current_macd_at_high < self.prev_macd_at_prospective_high):
+                    self._set_divergence(current_time, 'regular', 'short',
+                                        current_prospective_high, current_macd_at_high)
+
+            # 前回値を更新
+            self.prev_prospective_high = current_prospective_high
+            self.prev_prospective_high_idx = current_prospective_high_idx
+            self.prev_macd_at_prospective_high = current_macd_at_high
+
+        # ダイバージェンスの有効期限チェック
         if self.current_divergence is not None:
             valid_time_threshold = current_time - timedelta(hours=config.DIVERGENCE_VALID_HOURS)
             if self.current_divergence['detected_time'] < valid_time_threshold:
@@ -200,31 +285,17 @@ class BacktestEngineV7:
             'direction': direction,
             'detected_time': current_time,
             'price': price,
-            'macd': macd_value
+            'macd': macd_value,
+            'pivot_type': 'prospective'  # Ver15: 暫定ピボットであることを記録
         }
         self.current_divergence = divergence
         self.current_divergence_used = False
         self.divergences.append(divergence)
-        print(f"ダイバージェンス検出: {current_time} [{div_type}] [{direction}]")
+        print(f"ダイバージェンス検出 (暫定): {current_time} [{div_type}] [{direction}]")
 
     def _get_active_setup(self, current_time: pd.Timestamp, direction: str) -> bool:
         """
         指定方向の有効なダイバージェンスがあるかチェック
-
-        「1 divergence = 1 entry」制限：
-        - 使用済みは除外
-
-        Parameters:
-        -----------
-        current_time : pd.Timestamp
-            現在時刻
-        direction : str
-            'long' or 'short'
-
-        Returns:
-        --------
-        bool
-            有効で未使用なダイバージェンスがある場合True
         """
         if self.current_divergence is None:
             return False
@@ -248,22 +319,24 @@ class BacktestEngineV7:
 
         rci_short_current = current['RCI_9']
         rci_short_previous = previous['RCI_9']
-        rci_mid_current = current['RCI_14']
-        rci_mid_previous = previous['RCI_14']
+
+        # 5分足のパーフェクトオーダーをチェック
+        ema_20 = current.get('EMA_20', np.nan)
+        ema_30 = current.get('EMA_30', np.nan)
+        ema_40 = current.get('EMA_40', np.nan)
+        perfect_order_5m = check_perfect_order(ema_20, ema_30, ema_40)
 
         if direction == 'long':
-            return check_5m_entry_long_v7(
+            return check_5m_entry_long_v15(
                 rci_short_current, rci_short_previous,
-                rci_mid_current, rci_mid_previous,
-                rci_short_threshold=config.RCI_OVERBOUGHT,
-                rci_mid_threshold=config.RCI_MID_OVERBOUGHT
+                perfect_order_5m,
+                rci_short_threshold=config.RCI_OVERBOUGHT
             )
         elif direction == 'short':
-            return check_5m_entry_short_v7(
+            return check_5m_entry_short_v15(
                 rci_short_current, rci_short_previous,
-                rci_mid_current, rci_mid_previous,
-                rci_short_threshold=config.RCI_OVERBOUGHT,
-                rci_mid_threshold=config.RCI_MID_OVERBOUGHT
+                perfect_order_5m,
+                rci_short_threshold=config.RCI_OVERBOUGHT
             )
 
         return False
@@ -338,6 +411,7 @@ class BacktestEngineV7:
         """バックテストを実行"""
         print("バックテスト開始...")
         print(f"期間: {self.df_5m.index[0]} ~ {self.df_5m.index[-1]}")
+        print(f"暫定ピボット方式: {'有効' if config.USE_PROSPECTIVE_PIVOT else '無効'}")
 
         for idx in range(len(self.df_5m)):
             current_time = self.df_5m.index[idx]
@@ -359,16 +433,21 @@ class BacktestEngineV7:
                 if not self._is_trading_hours(current_time):
                     continue
 
-                if trend_4h == 'none':
-                    continue
+                # 1H PO + 1H RCI±60 + Hidden/Regular Div + 5M PO
+                data_1h = self._get_1h_data_at_time(current_time)
+                perfect_order_1h = self._check_1h_perfect_order(data_1h)
 
                 # 買いエントリーチェック
-                if trend_4h == 'uptrend' and self._get_active_setup(current_time, 'long'):
+                if (perfect_order_1h == 'uptrend' and
+                    self._check_1h_rci(data_1h, 'long') and
+                    self._get_active_setup(current_time, 'long')):
                     if self._check_5m_entry(idx, 'long'):
                         self._open_position(idx, 'long')
 
                 # 売りエントリーチェック
-                elif trend_4h == 'downtrend' and self._get_active_setup(current_time, 'short'):
+                elif (perfect_order_1h == 'downtrend' and
+                      self._check_1h_rci(data_1h, 'short') and
+                      self._get_active_setup(current_time, 'short')):
                     if self._check_5m_entry(idx, 'short'):
                         self._open_position(idx, 'short')
 
@@ -445,21 +524,13 @@ class BacktestEngineV7:
             return pd.DataFrame()
 
         trades_data = []
-        cumulative_profit_jpy = 0  # 累積損益（円）
+        cumulative_profit_jpy = 0
 
         for trade in self.trades:
-            # 保有時間を計算
             holding_time = trade.exit_time - trade.entry_time
             holding_hours = holding_time.total_seconds() / 3600
-
-            # 損益（円）= pips × 100 × ロットサイズ（0.1ロット = 1万通貨）
-            # GBPJPYの場合、1pips = 0.01円、1万通貨で100円/pips
             profit_jpy = trade.profit_pips * 100 * config.LOT_SIZE
-
-            # 累積損益
             cumulative_profit_jpy += profit_jpy
-
-            # 損益（%）= 損益 / 初期資金 × 100
             profit_pct = (profit_jpy / config.INITIAL_CAPITAL_JPY) * 100
 
             trades_data.append({
@@ -486,7 +557,6 @@ class BacktestEngineV7:
         """ダイバージェンスリストをDataFrameに変換"""
         if not self.divergences:
             return pd.DataFrame()
-
         return pd.DataFrame(self.divergences)
 
     def get_statistics(self) -> Dict:
@@ -510,11 +580,9 @@ class BacktestEngineV7:
         tp_exits = len([t for t in self.trades if t.exit_reason == 'tp'])
         sl_exits = len([t for t in self.trades if t.exit_reason == 'sl'])
 
-        # ダイバージェンスタイプ別集計
         hidden_trades = len([t for t in self.trades if t.divergence_type == 'hidden'])
         regular_trades = len([t for t in self.trades if t.divergence_type == 'regular'])
 
-        # 総損益（円）と期待値（%）
         total_profit_jpy = total_profit * 100 * config.LOT_SIZE
         expectancy_pct = (total_profit_jpy / config.INITIAL_CAPITAL_JPY) * 100 / total_trades if total_trades > 0 else 0
 
@@ -532,7 +600,6 @@ class BacktestEngineV7:
             drawdown = peak - cumulative
             if drawdown > max_drawdown:
                 max_drawdown = drawdown
-                # DDを現時点の資産（初期資金+ピーク時利益）に対する割合で計算
                 max_drawdown_pct = (drawdown / (config.INITIAL_CAPITAL_JPY + peak)) * 100
 
         # 保有時間の平均
@@ -559,7 +626,6 @@ class BacktestEngineV7:
             'total_divergences': len(self.divergences),
             'hidden_divergence_trades': hidden_trades,
             'regular_divergence_trades': regular_trades,
-            # 新規追加
             'total_profit_jpy': total_profit_jpy,
             'expectancy_pct': expectancy_pct,
             'max_drawdown_jpy': max_drawdown,

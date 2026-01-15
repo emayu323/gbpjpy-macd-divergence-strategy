@@ -1,5 +1,7 @@
 """
-System Ver7 - MACD Divergence Strategy バックテスト実行スクリプト
+System Ver15 - MACD Divergence Strategy バックテスト実行スクリプト
+Ver15: 暫定ピボット方式によるリアルタイムダイバージェンス検出
+       （12本確定を待たずに最新のローソク足を暫定先端として使用）
 """
 
 import pandas as pd
@@ -7,8 +9,8 @@ import numpy as np
 import os
 from datetime import datetime
 
-import config_v7 as config
-from backtest_engine_v7 import BacktestEngineV7
+import config_v15 as config
+from backtest_engine_v15 import BacktestEngineV15
 
 
 def load_data() -> tuple:
@@ -48,8 +50,8 @@ def load_data() -> tuple:
 def print_statistics(stats: dict):
     """統計情報を表示"""
     print("\n" + "=" * 60)
-    print("System Ver7 - MACD Divergence Strategy")
-    print("バックテスト結果")
+    print("System Ver15 - MACD Divergence Strategy")
+    print("暫定ピボット方式バックテスト結果")
     print("=" * 60)
 
     print(f"\n【サマリー統計】")
@@ -105,13 +107,13 @@ def save_results(df_trades: pd.DataFrame, df_divergences: pd.DataFrame, stats: d
 
     # 月別サマリーをCSV保存
     if df_monthly is not None and not df_monthly.empty:
-        monthly_file = f"{config.RESULTS_DIR}/monthly_summary_v7.csv"
+        monthly_file = f"{config.RESULTS_DIR}/monthly_summary_v15.csv"
         df_monthly.to_csv(monthly_file, encoding='utf-8-sig')
         print(f"月別サマリーを保存: {monthly_file}")
 
     # 年別サマリーをCSV保存
     if df_yearly is not None and not df_yearly.empty:
-        yearly_file = f"{config.RESULTS_DIR}/yearly_summary_v7.csv"
+        yearly_file = f"{config.RESULTS_DIR}/yearly_summary_v15.csv"
         df_yearly.to_csv(yearly_file, encoding='utf-8-sig')
         print(f"年別サマリーを保存: {yearly_file}")
 
@@ -119,10 +121,16 @@ def save_results(df_trades: pd.DataFrame, df_divergences: pd.DataFrame, stats: d
     report_file = config.REPORT_FILE
     with open(report_file, 'w', encoding='utf-8') as f:
         f.write("=" * 60 + "\n")
-        f.write("System Ver7 - MACD Divergence Strategy\n")
-        f.write("バックテストレポート\n")
+        f.write("System Ver15 - MACD Divergence Strategy\n")
+        f.write("暫定ピボット方式バックテストレポート\n")
         f.write("=" * 60 + "\n")
         f.write(f"\n実行日時: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+        f.write(f"\n【Ver15の特徴】\n")
+        f.write(f"  暫定ピボット方式: 有効\n")
+        f.write(f"  - 12本確定を待たずにダイバージェンスを検出\n")
+        f.write(f"  - 最新のローソク足を暫定的な先端として使用\n")
+        f.write(f"  - リアルタイムトレードに近い検出タイミング\n")
 
         f.write(f"\n【設定】\n")
         f.write(f"  通貨ペア:         {config.SYMBOL}\n")
@@ -136,10 +144,12 @@ def save_results(df_trades: pd.DataFrame, df_divergences: pd.DataFrame, stats: d
         f.write(f"\n【インジケーター設定】\n")
         f.write(f"  RCI短期:          {config.RCI_SHORT}\n")
         f.write(f"  RCI中期:          {config.RCI_MID}\n")
-        f.write(f"  RCI中期閾値:      ±{config.RCI_MID_OVERBOUGHT}\n")
+        f.write(f"  1H RCI閾値:       ±{config.RCI_1H_THRESHOLD}\n")
         f.write(f"  MACD:             ({config.MACD_FAST}, {config.MACD_SLOW}, {config.MACD_SIGNAL})\n")
-        f.write(f"  EMA:              ({config.EMA_SHORT}, {config.EMA_MID}, {config.EMA_LONG})\n")
-        f.write(f"  ZigZag 1H:        Depth {config.ZIGZAG_1H_DEPTH}\n")
+        f.write(f"  4H EMA:           {config.EMA_4H}\n")
+        f.write(f"  1H EMA (PO):      ({config.EMA_1H_SHORT}, {config.EMA_1H_MID}, {config.EMA_1H_LONG})\n")
+        f.write(f"  5M EMA (PO):      ({config.EMA_5M_SHORT}, {config.EMA_5M_MID}, {config.EMA_5M_LONG})\n")
+        f.write(f"  ZigZag 1H:        Depth {config.ZIGZAG_1H_DEPTH} (暫定ピボット対応)\n")
         f.write(f"  ZigZag 5M:        Depth {config.ZIGZAG_5M_DEPTH}\n")
 
         f.write(f"\n【サマリー統計】\n")
@@ -188,8 +198,8 @@ def save_results(df_trades: pd.DataFrame, df_divergences: pd.DataFrame, stats: d
 def main():
     """メイン処理"""
     print("\n" + "=" * 60)
-    print("System Ver7 - MACD Divergence Strategy")
-    print("バックテスト実行")
+    print("System Ver15 - MACD Divergence Strategy")
+    print("暫定ピボット方式バックテスト実行")
     print("=" * 60)
 
     # データ読み込み
@@ -197,7 +207,7 @@ def main():
 
     # バックテスト実行
     print("\n" + "=" * 60)
-    engine = BacktestEngineV7(df_5m, df_1h, df_4h)
+    engine = BacktestEngineV15(df_5m, df_1h, df_4h)
     df_trades = engine.run_backtest()
 
     # ダイバージェンス情報取得

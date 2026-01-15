@@ -1,0 +1,257 @@
+//@version=5
+indicator("GBPJPY Ver7 Phase1 - Environment Recognition", overlay=true, max_lines_count=100, max_labels_count=100)
+
+// ==========================================
+// 設定パラメータ
+// ==========================================
+
+// 4時間足EMA設定
+ema_period = input.int(50, "4時間足EMA期間", minval=1, group="トレンド判定")
+
+// MACD設定（1時間足）
+macd_fast = input.int(6, "MACD Fast", minval=1, group="MACD設定")
+macd_slow = input.int(13, "MACD Slow", minval=1, group="MACD設定")
+macd_signal = input.int(4, "MACD Signal", minval=1, group="MACD設定")
+
+// ZigZag設定（1時間足ダイバージェンス検出用）
+zigzag_depth = input.int(12, "ZigZag Depth", minval=5, maxval=50, group="ZigZag設定")
+zigzag_deviation = input.float(5, "ZigZag Deviation", minval=0, step=0.1, group="ZigZag設定")
+zigzag_backstep = input.int(3, "ZigZag Backstep", minval=2, group="ZigZag設定")
+
+// ダイバージェンス有効期限（時間）
+divergence_valid_hours = input.int(12, "ダイバージェンス有効期間（時間）", minval=1, maxval=48, group="ダイバージェンス設定")
+
+// 表示設定
+show_divergence_lines = input.bool(true, "ダイバージェンスライン表示", group="表示設定")
+show_trend_background = input.bool(true, "トレンド背景色表示", group="表示設定")
+show_entry_background = input.bool(true, "エントリー可能背景色表示", group="表示設定")
+
+// ==========================================
+// 上位足データ取得
+// ==========================================
+
+// 4時間足の50EMAと価格
+ema_50_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_period), lookahead=barmerge.lookahead_off)
+close_4h = request.security(syminfo.tickerid, "240", close, lookahead=barmerge.lookahead_off)
+
+// 1時間足のMACD（タプル分割代入）
+[macd_line_1h, signal_line_1h, hist_1h] = request.security(syminfo.tickerid, "60", ta.macd(close, macd_fast, macd_slow, macd_signal), lookahead=barmerge.lookahead_off)
+
+// 1時間足の高値・安値
+high_1h = request.security(syminfo.tickerid, "60", high, lookahead=barmerge.lookahead_off)
+low_1h = request.security(syminfo.tickerid, "60", low, lookahead=barmerge.lookahead_off)
+time_1h = request.security(syminfo.tickerid, "60", time, lookahead=barmerge.lookahead_off)
+
+// ==========================================
+// 4時間足トレンド判定
+// ==========================================
+
+// Ver7最適化版: 価格 vs 50EMA
+trend_4h = close_4h > ema_50_4h ? 1 : close_4h < ema_50_4h ? -1 : 0
+
+trend_4h_uptrend = trend_4h == 1
+trend_4h_downtrend = trend_4h == -1
+trend_4h_none = trend_4h == 0
+
+// トレンド背景色（メインチャート表示）
+bgcolor(show_trend_background and trend_4h_uptrend ? color.new(color.green, 95) : show_trend_background and trend_4h_downtrend ? color.new(color.red, 95) : na, title="トレンド背景")
+
+// ==========================================
+// ZigZag計算（1時間足）
+// ==========================================
+
+// ZigZag高値・安値検出
+var float zz_high = na
+var float zz_low = na
+var int zz_high_bar = na
+var int zz_low_bar = na
+var int last_pivot = 0  // 1=high, -1=low
+
+// Pivot検出
+pivot_high = ta.pivothigh(high_1h, zigzag_depth, zigzag_depth)
+pivot_low = ta.pivotlow(low_1h, zigzag_depth, zigzag_depth)
+
+// ZigZag更新
+if not na(pivot_high)
+    zz_high := pivot_high
+    zz_high_bar := bar_index - zigzag_depth
+    last_pivot := 1
+
+if not na(pivot_low)
+    zz_low := pivot_low
+    zz_low_bar := bar_index - zigzag_depth
+    last_pivot := -1
+
+// ==========================================
+// ダイバージェンス検出
+// ==========================================
+
+// ダイバージェンス記録用変数
+var string divergence_type = "none"
+var int divergence_bar = 0
+var float divergence_price = na
+var float divergence_macd = na
+
+// 前回のピーク/ボトム記録
+var float prev_high = na
+var float prev_low = na
+var float prev_macd_at_high = na
+var float prev_macd_at_low = na
+var int prev_high_bar = na
+var int prev_low_bar = na
+
+// 買いダイバージェンス検出（安値で判定）
+if not na(pivot_low) and not na(prev_low)
+    current_low = pivot_low
+    current_macd = macd_line_1h[zigzag_depth]
+
+    // ヒドゥン・ダイバージェンス（上昇トレンド用）: 価格↑ MACD↓
+    if current_low > prev_low and current_macd < prev_macd_at_low and trend_4h_uptrend
+        divergence_type := "hidden_long"
+        divergence_bar := bar_index
+        divergence_price := current_low
+        divergence_macd := current_macd
+
+        // ダイバージェンスライン描画
+        if show_divergence_lines
+            line.new(prev_low_bar, prev_low, zz_low_bar, current_low, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+            label.new(zz_low_bar, current_low, "ヒドゥン買い", color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+    // レギュラー・ダイバージェンス: 価格↓ MACD↑
+    else if current_low < prev_low and current_macd > prev_macd_at_low
+        divergence_type := "regular_long"
+        divergence_bar := bar_index
+        divergence_price := current_low
+        divergence_macd := current_macd
+
+        // ダイバージェンスライン描画
+        if show_divergence_lines
+            line.new(prev_low_bar, prev_low, zz_low_bar, current_low, color=color.new(color.blue, 0), width=2, style=line.style_solid)
+            label.new(zz_low_bar, current_low, "レギュラー買い", color=color.new(color.blue, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+    // 前回の値を更新
+    prev_low := current_low
+    prev_macd_at_low := current_macd
+    prev_low_bar := zz_low_bar
+
+// 前回がなければ初期化
+else if not na(pivot_low) and na(prev_low)
+    prev_low := pivot_low
+    prev_macd_at_low := macd_line_1h[zigzag_depth]
+    prev_low_bar := zz_low_bar
+
+// 売りダイバージェンス検出（高値で判定）
+if not na(pivot_high) and not na(prev_high)
+    current_high = pivot_high
+    current_macd = macd_line_1h[zigzag_depth]
+
+    // ヒドゥン・ダイバージェンス（下降トレンド用）: 価格↓ MACD↑
+    if current_high < prev_high and current_macd > prev_macd_at_high and trend_4h_downtrend
+        divergence_type := "hidden_short"
+        divergence_bar := bar_index
+        divergence_price := current_high
+        divergence_macd := current_macd
+
+        // ダイバージェンスライン描画
+        if show_divergence_lines
+            line.new(prev_high_bar, prev_high, zz_high_bar, current_high, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+            label.new(zz_high_bar, current_high, "ヒドゥン売り", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+    // レギュラー・ダイバージェンス: 価格↑ MACD↓
+    else if current_high > prev_high and current_macd < prev_macd_at_high
+        divergence_type := "regular_short"
+        divergence_bar := bar_index
+        divergence_price := current_high
+        divergence_macd := current_macd
+
+        // ダイバージェンスライン描画
+        if show_divergence_lines
+            line.new(prev_high_bar, prev_high, zz_high_bar, current_high, color=color.new(color.orange, 0), width=2, style=line.style_solid)
+            label.new(zz_high_bar, current_high, "レギュラー売り", color=color.new(color.orange, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+    // 前回の値を更新
+    prev_high := current_high
+    prev_macd_at_high := current_macd
+    prev_high_bar := zz_high_bar
+
+// 前回がなければ初期化
+else if not na(pivot_high) and na(prev_high)
+    prev_high := pivot_high
+    prev_macd_at_high := macd_line_1h[zigzag_depth]
+    prev_high_bar := zz_high_bar
+
+// ==========================================
+// ダイバージェンス有効期限チェック
+// ==========================================
+
+// 5分足で12時間 = 144本
+// バーインデックスで管理
+divergence_valid_bars = divergence_valid_hours * 12
+
+// 有効期限チェック
+divergence_active = divergence_type != "none" and (bar_index - divergence_bar) <= divergence_valid_bars
+
+// 期限切れリセット
+if divergence_type != "none" and (bar_index - divergence_bar) > divergence_valid_bars
+    divergence_type := "none"
+
+// ダイバージェンス検出フラグ（背景色で表示）
+divergence_signal = divergence_active and (divergence_type == "hidden_long" or divergence_type == "regular_long") ? 2 : divergence_active and (divergence_type == "hidden_short" or divergence_type == "regular_short") ? -2 : 0
+
+// ==========================================
+// エントリー可能状態判定
+// ==========================================
+
+setup_long = trend_4h_uptrend and divergence_active and (divergence_type == "hidden_long" or divergence_type == "regular_long")
+setup_short = trend_4h_downtrend and divergence_active and (divergence_type == "hidden_short" or divergence_type == "regular_short")
+
+entry_ready = setup_long or setup_short
+
+// エントリー可能背景色（トレンド背景より優先）- メインチャート表示
+bgcolor(show_entry_background and setup_long ? color.new(color.lime, 85) : show_entry_background and setup_short ? color.new(color.fuchsia, 85) : na, title="エントリー可能背景")
+
+// ==========================================
+// 情報パネル
+// ==========================================
+
+var table info_table = table.new(position.top_right, 2, 5, border_width=1)
+
+if barstate.islast
+    // トレンド状態
+    table.cell(info_table, 0, 0, "4H トレンド", text_color=color.white, bgcolor=color.gray)
+    table.cell(info_table, 1, 0, trend_4h_uptrend ? "上昇" : trend_4h_downtrend ? "下降" : "なし", text_color=color.white, bgcolor=trend_4h_uptrend ? color.green : trend_4h_downtrend ? color.red : color.gray)
+
+    // ダイバージェンス状態
+    table.cell(info_table, 0, 1, "ダイバージェンス", text_color=color.white, bgcolor=color.gray)
+    div_text = divergence_type == "hidden_long" ? "ヒドゥン買い" : divergence_type == "regular_long" ? "レギュラー買い" : divergence_type == "hidden_short" ? "ヒドゥン売り" : divergence_type == "regular_short" ? "レギュラー売り" : "なし"
+    div_color = divergence_active and (divergence_type == "hidden_long" or divergence_type == "regular_long") ? color.green : divergence_active and (divergence_type == "hidden_short" or divergence_type == "regular_short") ? color.red : color.gray
+    table.cell(info_table, 1, 1, div_text, text_color=color.white, bgcolor=div_color)
+
+    // 有効期限
+    if divergence_active
+        remaining_bars = divergence_valid_bars - (bar_index - divergence_bar)
+        remaining_hours = remaining_bars / 12
+        table.cell(info_table, 0, 2, "残り時間", text_color=color.white, bgcolor=color.gray)
+        table.cell(info_table, 1, 2, str.tostring(remaining_hours, "#.#") + "h", text_color=color.white, bgcolor=color.gray)
+    else
+        table.cell(info_table, 0, 2, "残り時間", text_color=color.white, bgcolor=color.gray)
+        table.cell(info_table, 1, 2, "-", text_color=color.white, bgcolor=color.gray)
+
+    // エントリー可能状態
+    table.cell(info_table, 0, 3, "エントリー", text_color=color.white, bgcolor=color.gray)
+    entry_text = setup_long ? "買い可能" : setup_short ? "売り可能" : "待機"
+    entry_color = setup_long ? color.new(color.lime, 30) : setup_short ? color.new(color.fuchsia, 30) : color.gray
+    table.cell(info_table, 1, 3, entry_text, text_color=color.white, bgcolor=entry_color)
+
+    // 説明
+    table.cell(info_table, 0, 4, "Ver7 Phase1", text_color=color.white, bgcolor=color.navy, tooltip="環境認識インジケーター")
+    table.cell(info_table, 1, 4, "環境認識", text_color=color.white, bgcolor=color.navy)
+
+// ==========================================
+// アラート条件
+// ==========================================
+
+alertcondition(setup_long, "買いセットアップ完了", "GBPJPY Ver7: 買いエントリー可能（トレンド+ダイバージェンス）")
+alertcondition(setup_short, "売りセットアップ完了", "GBPJPY Ver7: 売りエントリー可能（トレンド+ダイバージェンス）")
+alertcondition(divergence_type == "hidden_long", "ヒドゥン買いダイバージェンス", "GBPJPY Ver7: ヒドゥン買いダイバージェンス検出")
+alertcondition(divergence_type == "hidden_short", "ヒドゥン売りダイバージェンス", "GBPJPY Ver7: ヒドゥン売りダイバージェンス検出")

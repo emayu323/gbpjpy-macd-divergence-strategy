@@ -1,0 +1,553 @@
+//@version=6
+indicator("GBPJPY Ver7 Complete - 環境認識 + エントリーシグナル", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=500, max_bars_back=200)
+
+// ==========================================
+// 設定パラメータ
+// ==========================================
+
+// 4時間足EMA設定
+ema_period = input.int(50, "4時間足EMA期間", minval=1, group="トレンド判定")
+
+// MACD設定（1時間足）
+macd_fast = input.int(6, "MACD Fast", minval=1, group="MACD設定")
+macd_slow = input.int(13, "MACD Slow", minval=1, group="MACD設定")
+macd_signal = input.int(4, "MACD Signal", minval=1, group="MACD設定")
+
+// ZigZag設定（1時間足ダイバージェンス検出用）
+zigzag_depth = input.int(12, "ZigZag Depth", minval=5, maxval=50, group="ZigZag設定")
+zigzag_deviation = input.float(5, "ZigZag Deviation", minval=0, step=0.1, group="ZigZag設定")
+zigzag_backstep = input.int(3, "ZigZag Backstep", minval=2, group="ZigZag設定")
+
+// ダイバージェンス有効期限（時間）
+divergence_valid_hours = input.int(12, "ダイバージェンス有効期間（時間）", minval=1, maxval=48, group="ダイバージェンス設定")
+
+// RCI設定（5分足エントリー用）
+rci_short_period = input.int(9, "RCI短期期間", minval=1, group="RCI設定")
+rci_mid_period = input.int(14, "RCI中期期間", minval=1, group="RCI設定")
+rci_short_threshold = input.int(60, "RCI短期閾値", minval=1, maxval=100, group="RCI設定")
+rci_mid_threshold = input.int(40, "RCI中期閾値", minval=1, maxval=100, group="RCI設定")
+
+// 1 divergence = 1 entry 制限設定
+enable_1div1entry = input.bool(true, "1ダイバージェンス1エントリー制限", group="シグナル制限", tooltip="同じダイバージェンス期間内での重複シグナルを抑制")
+
+// 取引時間フィルタ（日本時間）
+trading_start_hour = input.int(8, "取引開始時間（JST）", minval=0, maxval=24, group="時間フィルタ")
+trading_end_hour = input.int(24, "取引終了時間（JST）", minval=0, maxval=24, group="時間フィルタ")
+
+// SL/TP設定
+sl_zigzag_depth = input.int(5, "5分足ZigZag Depth（SL用）", minval=2, maxval=20, group="SL/TP設定")
+sl_zigzag_backstep = input.int(2, "5分足ZigZag Backstep（SL用）", minval=1, maxval=10, group="SL/TP設定")
+risk_reward_ratio = input.float(1.5, "リスクリワード比", minval=0.5, maxval=5.0, step=0.1, group="SL/TP設定")
+sl_atr_length = input.int(14, "SL ATR期間", minval=1, group="SL/TP設定")
+sl_atr_mult = input.float(1.0, "SL ATR倍率", minval=0.1, maxval=10.0, step=0.1, group="SL/TP設定", tooltip="ZigZagピボットからの余裕幅（ATR倍率）")
+sl_fallback_atr_mult = input.float(2.0, "SLデフォルトATR倍率", minval=0.1, maxval=10.0, step=0.1, group="SL/TP設定", tooltip="ZigZagが無い場合のATR倍率")
+sl_min_atr_mult = input.float(0.5, "SL最小ATR倍率", minval=0.1, maxval=10.0, step=0.1, group="SL/TP設定", tooltip="SLがエントリー方向を跨がないよう最低距離を確保")
+box_extend_bars = input.int(50, "ボックス延長バー数", minval=10, maxval=200, group="SL/TP設定")
+
+// 表示設定
+show_divergence_lines = input.bool(true, "ダイバージェンスライン表示", group="表示設定")
+show_trend_background = input.bool(true, "トレンド背景色表示", group="表示設定")
+show_entry_background = input.bool(true, "エントリー可能背景色表示", group="表示設定")
+show_signals = input.bool(true, "シグナル矢印表示", group="表示設定")
+show_info_panel = input.bool(true, "情報パネル表示", group="表示設定")
+show_sl_tp_box = input.bool(true, "SL/TPボックス表示", group="表示設定")
+show_sl_tp_lines = input.bool(true, "SL/TPライン表示", group="表示設定")
+
+// ==========================================
+// 上位足データ取得
+// ==========================================
+
+// 4時間足の50EMAと価格
+ema_50_4h = request.security(syminfo.tickerid, "240", ta.ema(close, ema_period), lookahead=barmerge.lookahead_off)
+close_4h = request.security(syminfo.tickerid, "240", close, lookahead=barmerge.lookahead_off)
+
+// 1時間足のMACD
+[macd_line_1h, signal_line_1h, hist_1h] = request.security(syminfo.tickerid, "60", ta.macd(close, macd_fast, macd_slow, macd_signal), lookahead=barmerge.lookahead_off)
+
+// 1時間足の高値・安値
+high_1h = request.security(syminfo.tickerid, "60", high, lookahead=barmerge.lookahead_off)
+low_1h = request.security(syminfo.tickerid, "60", low, lookahead=barmerge.lookahead_off)
+
+// ==========================================
+// 4時間足トレンド判定
+// ==========================================
+
+// Ver7最適化版: 価格 vs 50EMA
+trend_4h = close_4h > ema_50_4h ? 1 : close_4h < ema_50_4h ? -1 : 0
+
+trend_4h_uptrend = trend_4h == 1
+trend_4h_downtrend = trend_4h == -1
+trend_4h_none = trend_4h == 0
+
+// トレンド背景色
+bgcolor(show_trend_background and trend_4h_uptrend ? color.new(color.green, 95) : show_trend_background and trend_4h_downtrend ? color.new(color.red, 95) : na, title="トレンド背景")
+
+// ==========================================
+// ZigZag計算（sukepoyo_sub.pine方式）
+// ==========================================
+
+// 1時間足ZigZag計算（ダイバージェンス検出用）
+float zz1h_dev_th = zigzag_deviation * syminfo.mintick
+int zz1h_hb = ta.highestbars(high_1h, zigzag_depth)
+int zz1h_lb = ta.lowestbars(low_1h, zigzag_depth)
+zz1h_hr = ta.barssince(not (high_1h[-zz1h_hb] - high_1h > zz1h_dev_th)[1])
+zz1h_lr = ta.barssince(not (low_1h - low_1h[-zz1h_lb] > zz1h_dev_th)[1])
+zz1h_dir = ta.barssince(not (zz1h_hr > zz1h_lr)) >= zigzag_backstep ? -1 : 1
+
+// 1時間足ZigZagピボットポイント追跡
+var chart.point zz1h_A = chart.point.now(low_1h)   // 現在形成中のピボット
+var chart.point zz1h_B = chart.point.now(low_1h)   // 直近確定ピボット (z2)
+var chart.point zz1h_C = chart.point.now(high_1h)  // 1つ前の確定ピボット (z1)
+
+// 方向転換時の更新
+if zz1h_dir != zz1h_dir[1]
+    zz1h_C := zz1h_B.copy()
+    zz1h_B := zz1h_A.copy()
+
+// 上昇方向時のピボット更新
+if zz1h_dir > 0
+    if high_1h > zz1h_B.price
+        zz1h_B := chart.point.now(high_1h)
+        zz1h_A := chart.point.now(low_1h)
+    if low_1h < zz1h_A.price
+        zz1h_A := chart.point.now(low_1h)
+// 下降方向時のピボット更新
+else if zz1h_dir < 0
+    if low_1h < zz1h_B.price
+        zz1h_B := chart.point.now(low_1h)
+        zz1h_A := chart.point.now(high_1h)
+    if high_1h > zz1h_A.price
+        zz1h_A := chart.point.now(high_1h)
+
+// ダイバージェンス検出用の変数
+var float zz_high = na
+var float zz_low = na
+var int zz_high_bar = na
+var int zz_low_bar = na
+
+// 方向転換時に確定ピボットを記録
+bool new_high_pivot = zz1h_dir != zz1h_dir[1] and zz1h_dir[1] > 0
+bool new_low_pivot = zz1h_dir != zz1h_dir[1] and zz1h_dir[1] < 0
+
+if new_high_pivot
+    zz_high := zz1h_B.price
+    zz_high_bar := zz1h_B.index
+
+if new_low_pivot
+    zz_low := zz1h_B.price
+    zz_low_bar := zz1h_B.index
+
+// ==========================================
+// ダイバージェンス検出
+// ==========================================
+
+var string divergence_type = "none"
+var int divergence_bar = 0
+var float divergence_price = na
+var float divergence_macd = na
+var int divergence_id = na
+var bool divergence_used = false
+
+var float prev_high = na
+var float prev_low = na
+var float prev_macd_at_high = na
+var float prev_macd_at_low = na
+var int prev_high_bar = na
+var int prev_low_bar = na
+
+// 買いダイバージェンス検出（新しい安値ピボット確定時）
+if new_low_pivot and not na(prev_low)
+    current_low = zz1h_B.price
+    current_macd = macd_line_1h
+
+    // ヒドゥン・ダイバージェンス（上昇トレンド用）
+    if current_low > prev_low and current_macd < prev_macd_at_low and trend_4h_uptrend
+        divergence_type := "hidden_long"
+        divergence_bar := bar_index
+        divergence_price := current_low
+        divergence_macd := current_macd
+        divergence_id := bar_index
+        divergence_used := false
+
+        if show_divergence_lines
+            line.new(prev_low_bar, prev_low, zz1h_B.index, current_low, color=color.new(color.green, 0), width=2, style=line.style_dashed)
+            label.new(zz1h_B.index, current_low, "ヒドゥン買い", color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+    // レギュラー・ダイバージェンス
+    else if current_low < prev_low and current_macd > prev_macd_at_low
+        divergence_type := "regular_long"
+        divergence_bar := bar_index
+        divergence_price := current_low
+        divergence_macd := current_macd
+        divergence_id := bar_index
+        divergence_used := false
+
+        if show_divergence_lines
+            line.new(prev_low_bar, prev_low, zz1h_B.index, current_low, color=color.new(color.blue, 0), width=2, style=line.style_solid)
+            label.new(zz1h_B.index, current_low, "レギュラー買い", color=color.new(color.blue, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+    prev_low := current_low
+    prev_macd_at_low := current_macd
+    prev_low_bar := zz1h_B.index
+
+else if new_low_pivot and na(prev_low)
+    prev_low := zz1h_B.price
+    prev_macd_at_low := macd_line_1h
+    prev_low_bar := zz1h_B.index
+
+// 売りダイバージェンス検出（新しい高値ピボット確定時）
+if new_high_pivot and not na(prev_high)
+    current_high = zz1h_B.price
+    current_macd = macd_line_1h
+
+    // ヒドゥン・ダイバージェンス（下降トレンド用）
+    if current_high < prev_high and current_macd > prev_macd_at_high and trend_4h_downtrend
+        divergence_type := "hidden_short"
+        divergence_bar := bar_index
+        divergence_price := current_high
+        divergence_macd := current_macd
+        divergence_id := bar_index
+        divergence_used := false
+
+        if show_divergence_lines
+            line.new(prev_high_bar, prev_high, zz1h_B.index, current_high, color=color.new(color.red, 0), width=2, style=line.style_dashed)
+            label.new(zz1h_B.index, current_high, "ヒドゥン売り", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+    // レギュラー・ダイバージェンス
+    else if current_high > prev_high and current_macd < prev_macd_at_high
+        divergence_type := "regular_short"
+        divergence_bar := bar_index
+        divergence_price := current_high
+        divergence_macd := current_macd
+        divergence_id := bar_index
+        divergence_used := false
+
+        if show_divergence_lines
+            line.new(prev_high_bar, prev_high, zz1h_B.index, current_high, color=color.new(color.orange, 0), width=2, style=line.style_solid)
+            label.new(zz1h_B.index, current_high, "レギュラー売り", color=color.new(color.orange, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+    prev_high := current_high
+    prev_macd_at_high := current_macd
+    prev_high_bar := zz1h_B.index
+
+else if new_high_pivot and na(prev_high)
+    prev_high := zz1h_B.price
+    prev_macd_at_high := macd_line_1h
+    prev_high_bar := zz1h_B.index
+
+// ==========================================
+// ダイバージェンス有効期限チェック
+// ==========================================
+
+divergence_valid_bars = divergence_valid_hours * 12  // 5分足換算
+divergence_active = divergence_type != "none" and (bar_index - divergence_bar) <= divergence_valid_bars
+
+if divergence_type != "none" and (bar_index - divergence_bar) > divergence_valid_bars
+    divergence_type := "none"
+    divergence_id := na
+    divergence_used := false
+
+// エントリー可能状態
+setup_long = trend_4h_uptrend and divergence_active and (divergence_type == "hidden_long" or divergence_type == "regular_long")
+setup_short = trend_4h_downtrend and divergence_active and (divergence_type == "hidden_short" or divergence_type == "regular_short")
+
+// エントリー可能背景色
+bgcolor(show_entry_background and setup_long ? color.new(color.lime, 85) : show_entry_background and setup_short ? color.new(color.fuchsia, 85) : na, title="エントリー可能背景")
+
+// ==========================================
+// 5分足ZigZag計算（SL用）- sukepoyo_sub.pine方式
+// ==========================================
+
+// 5分足ZigZag計算
+float zz5m_dev_th = 3 * syminfo.mintick  // deviation = 3 points
+int zz5m_hb = ta.highestbars(high, sl_zigzag_depth)
+int zz5m_lb = ta.lowestbars(low, sl_zigzag_depth)
+zz5m_hr = ta.barssince(not (high[-zz5m_hb] - high > zz5m_dev_th)[1])
+zz5m_lr = ta.barssince(not (low - low[-zz5m_lb] > zz5m_dev_th)[1])
+zz5m_dir = ta.barssince(not (zz5m_hr > zz5m_lr)) >= sl_zigzag_backstep ? -1 : 1
+
+// 5分足ZigZagピボットポイント追跡
+var chart.point zz5m_A = chart.point.now(low)   // 現在形成中のピボット
+var chart.point zz5m_B = chart.point.now(low)   // 直近確定ピボット
+var chart.point zz5m_C = chart.point.now(high)  // 1つ前の確定ピボット
+
+// 方向転換時の更新
+if zz5m_dir != zz5m_dir[1]
+    zz5m_C := zz5m_B.copy()
+    zz5m_B := zz5m_A.copy()
+
+// 上昇方向時のピボット更新
+if zz5m_dir > 0
+    if high > zz5m_B.price
+        zz5m_B := chart.point.now(high)
+        zz5m_A := chart.point.now(low)
+    if low < zz5m_A.price
+        zz5m_A := chart.point.now(low)
+// 下降方向時のピボット更新
+else if zz5m_dir < 0
+    if low < zz5m_B.price
+        zz5m_B := chart.point.now(low)
+        zz5m_A := chart.point.now(high)
+    if high > zz5m_A.price
+        zz5m_A := chart.point.now(high)
+
+// 直近のピボット高値・安値を追跡
+var float recent_pivot_high_5m = na
+var float recent_pivot_low_5m = na
+var int recent_pivot_high_bar_5m = 0
+var int recent_pivot_low_bar_5m = 0
+
+// 方向転換時に確定ピボットを記録
+bool new_high_pivot_5m = zz5m_dir != zz5m_dir[1] and zz5m_dir[1] > 0
+bool new_low_pivot_5m = zz5m_dir != zz5m_dir[1] and zz5m_dir[1] < 0
+
+if new_high_pivot_5m
+    recent_pivot_high_5m := zz5m_B.price
+    recent_pivot_high_bar_5m := zz5m_B.index
+
+if new_low_pivot_5m
+    recent_pivot_low_5m := zz5m_B.price
+    recent_pivot_low_bar_5m := zz5m_B.index
+
+// 現在形成中のピボットも参照（より直近の値を使用）
+// 上昇方向なら直近の安値、下降方向なら直近の高値を更新
+if zz5m_dir > 0 and not na(zz5m_A.price)
+    recent_pivot_low_5m := math.min(nz(recent_pivot_low_5m, zz5m_A.price), zz5m_A.price)
+if zz5m_dir < 0 and not na(zz5m_A.price)
+    recent_pivot_high_5m := math.max(nz(recent_pivot_high_5m, zz5m_A.price), zz5m_A.price)
+
+// pips計算用（GBPJPYは小数点以下2桁）
+pip_value = syminfo.mintick * 10
+atr_5m = ta.atr(sl_atr_length)
+sl_buffer_price = atr_5m * sl_atr_mult
+sl_fallback_price = atr_5m * sl_fallback_atr_mult
+sl_min_price = atr_5m * sl_min_atr_mult
+
+// ==========================================
+// RCI計算（5分足エントリートリガー）
+// ==========================================
+
+rci(src, length) =>
+    sum_d2 = 0.0
+    for i = 0 to length - 1
+        price_i = src[length - 1 - i]  // Pythonと同じ順序（古い→新しい）
+        less = 0
+        equal = 0
+        for j = 0 to length - 1
+            price_j = src[length - 1 - j]
+            if price_j < price_i
+                less += 1
+            else if price_j == price_i
+                equal += 1
+        rank_price = 1 + less + (equal - 1) / 2.0  // 平均順位
+        rank_time = i + 1
+        d = rank_time - rank_price
+        sum_d2 += d * d
+    n = length
+    rci_value = (1 - (6 * sum_d2) / (n * (n * n - 1))) * 100
+    rci_value
+
+rci_short = rci(close, rci_short_period)
+rci_mid = rci(close, rci_mid_period)
+
+// ==========================================
+// エントリーシグナル検出（RCI条件）
+// ==========================================
+
+// 買いシグナル条件（パターンA）
+// RCI下限（-60以下）からの反転上昇 = 押し目完了で買い
+long_condition_1 = rci_short <= -rci_short_threshold
+long_condition_2 = rci_short > rci_short[1]
+long_condition_3 = rci_mid <= -rci_mid_threshold and rci_mid > rci_mid[1]
+raw_rci_long = long_condition_1 and long_condition_2 and long_condition_3
+
+// 売りシグナル条件（パターンA）
+// RCI上限（+60以上）からの反転下落 = 戻り完了で売り
+short_condition_1 = rci_short >= rci_short_threshold
+short_condition_2 = rci_short < rci_short[1]
+short_condition_3 = rci_mid >= rci_mid_threshold and rci_mid < rci_mid[1]
+raw_rci_short = short_condition_1 and short_condition_2 and short_condition_3
+
+// 環境認識フィルター適用
+raw_signal_long = raw_rci_long and setup_long
+raw_signal_short = raw_rci_short and setup_short
+
+// 取引時間フィルタ
+trading_hour = hour(time, "Asia/Tokyo")
+is_trading_hours = trading_start_hour <= trading_hour and trading_hour < trading_end_hour
+
+// ==========================================
+// 1 divergence = 1 entry 制限ロジック
+// ==========================================
+
+divergence_ready = divergence_active and not divergence_used and not na(divergence_id)
+signal_long = raw_signal_long and is_trading_hours and (not enable_1div1entry or divergence_ready)
+signal_short = raw_signal_short and is_trading_hours and (not enable_1div1entry or divergence_ready)
+
+if signal_long or signal_short
+    divergence_used := enable_1div1entry ? true : divergence_used
+
+// ==========================================
+// シグナル表示
+// ==========================================
+
+plotshape(show_signals and signal_long, title="買いエントリー", location=location.belowbar, color=color.new(color.lime, 0), style=shape.triangleup, size=size.normal, text="買い")
+plotshape(show_signals and signal_short, title="売りエントリー", location=location.abovebar, color=color.new(color.fuchsia, 0), style=shape.triangledown, size=size.normal, text="売り")
+
+// RCI条件のみ成立（環境待ち）
+plotshape(show_signals and raw_rci_long and not setup_long, title="RCI買い（待機）", location=location.belowbar, color=color.new(color.gray, 50), style=shape.triangleup, size=size.tiny)
+plotshape(show_signals and raw_rci_short and not setup_short, title="RCI売り（待機）", location=location.abovebar, color=color.new(color.gray, 50), style=shape.triangledown, size=size.tiny)
+
+// ==========================================
+// SL/TPボックス・ライン描画
+// ==========================================
+
+// 現在のトレード情報を保持
+var float current_entry_price = na
+var float current_sl_price = na
+var float current_tp_price = na
+var int current_trade_direction = 0  // 1=long, -1=short, 0=none
+var int current_entry_bar = 0
+
+// ボックスとライン変数
+var box sl_box = na
+var box tp_box = na
+var line entry_line = na
+var line sl_line = na
+var line tp_line = na
+var label entry_label = na
+var label sl_label = na
+var label tp_label = na
+
+// 買いシグナル発生時
+if signal_long
+    // エントリー価格
+    current_entry_price := close
+    current_entry_bar := bar_index
+    current_trade_direction := 1
+
+    // SL計算: 直近の5分足ピボット安値 - バッファ
+    sl_price = not na(recent_pivot_low_5m) ? recent_pivot_low_5m - sl_buffer_price : close - sl_fallback_price
+    sl_price := math.min(sl_price, close - sl_min_price)
+    current_sl_price := sl_price
+
+    // TP計算: RR比に基づく
+    risk = current_entry_price - current_sl_price
+    current_tp_price := current_entry_price + (risk * risk_reward_ratio)
+
+    // TPボックス（緑）- 過去のシグナルも残す
+    if show_sl_tp_box
+        tp_box := box.new(bar_index, current_tp_price, bar_index + box_extend_bars, current_entry_price, border_color=color.new(color.green, 50), bgcolor=color.new(color.green, 90), border_width=1, border_style=line.style_solid)
+
+    // SLボックス（赤）
+    if show_sl_tp_box
+        sl_box := box.new(bar_index, current_entry_price, bar_index + box_extend_bars, current_sl_price, border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 90), border_width=1, border_style=line.style_solid)
+
+    // ライン
+    if show_sl_tp_lines
+        entry_line := line.new(bar_index, current_entry_price, bar_index + box_extend_bars, current_entry_price, color=color.new(color.white, 30), width=2, style=line.style_solid)
+        tp_line := line.new(bar_index, current_tp_price, bar_index + box_extend_bars, current_tp_price, color=color.new(color.green, 30), width=2, style=line.style_dashed)
+        sl_line := line.new(bar_index, current_sl_price, bar_index + box_extend_bars, current_sl_price, color=color.new(color.red, 30), width=2, style=line.style_dashed)
+
+    // ラベル
+    entry_label := label.new(bar_index + box_extend_bars, current_entry_price, "Entry: " + str.tostring(current_entry_price, "#.###"), color=color.new(color.white, 70), textcolor=color.white, style=label.style_label_left, size=size.small)
+    tp_label := label.new(bar_index + box_extend_bars, current_tp_price, "TP: " + str.tostring(current_tp_price, "#.###") + " (+" + str.tostring((current_tp_price - current_entry_price) / pip_value, "#.#") + " pips)", color=color.new(color.green, 70), textcolor=color.green, style=label.style_label_left, size=size.small)
+    sl_label := label.new(bar_index + box_extend_bars, current_sl_price, "SL: " + str.tostring(current_sl_price, "#.###") + " (-" + str.tostring((current_entry_price - current_sl_price) / pip_value, "#.#") + " pips)", color=color.new(color.red, 70), textcolor=color.red, style=label.style_label_left, size=size.small)
+
+// 売りシグナル発生時
+if signal_short
+    // エントリー価格
+    current_entry_price := close
+    current_entry_bar := bar_index
+    current_trade_direction := -1
+
+    // SL計算: 直近の5分足ピボット高値 + バッファ
+    sl_price = not na(recent_pivot_high_5m) ? recent_pivot_high_5m + sl_buffer_price : close + sl_fallback_price
+    sl_price := math.max(sl_price, close + sl_min_price)
+    current_sl_price := sl_price
+
+    // TP計算: RR比に基づく
+    risk = current_sl_price - current_entry_price
+    current_tp_price := current_entry_price - (risk * risk_reward_ratio)
+
+    // TPボックス（緑）- 過去のシグナルも残す
+    if show_sl_tp_box
+        tp_box := box.new(bar_index, current_entry_price, bar_index + box_extend_bars, current_tp_price, border_color=color.new(color.green, 50), bgcolor=color.new(color.green, 90), border_width=1, border_style=line.style_solid)
+
+    // SLボックス（赤）
+    if show_sl_tp_box
+        sl_box := box.new(bar_index, current_sl_price, bar_index + box_extend_bars, current_entry_price, border_color=color.new(color.red, 50), bgcolor=color.new(color.red, 90), border_width=1, border_style=line.style_solid)
+
+    // ライン
+    if show_sl_tp_lines
+        entry_line := line.new(bar_index, current_entry_price, bar_index + box_extend_bars, current_entry_price, color=color.new(color.white, 30), width=2, style=line.style_solid)
+        tp_line := line.new(bar_index, current_tp_price, bar_index + box_extend_bars, current_tp_price, color=color.new(color.green, 30), width=2, style=line.style_dashed)
+        sl_line := line.new(bar_index, current_sl_price, bar_index + box_extend_bars, current_sl_price, color=color.new(color.red, 30), width=2, style=line.style_dashed)
+
+    // ラベル
+    entry_label := label.new(bar_index + box_extend_bars, current_entry_price, "Entry: " + str.tostring(current_entry_price, "#.###"), color=color.new(color.white, 70), textcolor=color.white, style=label.style_label_left, size=size.small)
+    tp_label := label.new(bar_index + box_extend_bars, current_tp_price, "TP: " + str.tostring(current_tp_price, "#.###") + " (+" + str.tostring((current_entry_price - current_tp_price) / pip_value, "#.#") + " pips)", color=color.new(color.green, 70), textcolor=color.green, style=label.style_label_left, size=size.small)
+    sl_label := label.new(bar_index + box_extend_bars, current_sl_price, "SL: " + str.tostring(current_sl_price, "#.###") + " (-" + str.tostring((current_sl_price - current_entry_price) / pip_value, "#.#") + " pips)", color=color.new(color.red, 70), textcolor=color.red, style=label.style_label_left, size=size.small)
+
+// ==========================================
+// 情報パネル
+// ==========================================
+
+var table info_table = table.new(position.top_right, 2, 8, border_width=1)
+
+if barstate.islast and show_info_panel
+    // トレンド状態
+    table.cell(info_table, 0, 0, "4H トレンド", text_color=color.white, bgcolor=color.gray)
+    table.cell(info_table, 1, 0, trend_4h_uptrend ? "上昇" : trend_4h_downtrend ? "下降" : "なし", text_color=color.white, bgcolor=trend_4h_uptrend ? color.green : trend_4h_downtrend ? color.red : color.gray)
+
+    // ダイバージェンス状態
+    table.cell(info_table, 0, 1, "ダイバージェンス", text_color=color.white, bgcolor=color.gray)
+    div_text = divergence_type == "hidden_long" ? "ヒドゥン買い" : divergence_type == "regular_long" ? "レギュラー買い" : divergence_type == "hidden_short" ? "ヒドゥン売り" : divergence_type == "regular_short" ? "レギュラー売り" : "なし"
+    div_color = divergence_active and (divergence_type == "hidden_long" or divergence_type == "regular_long") ? color.green : divergence_active and (divergence_type == "hidden_short" or divergence_type == "regular_short") ? color.red : color.gray
+    table.cell(info_table, 1, 1, div_text, text_color=color.white, bgcolor=div_color)
+
+    // 有効期限
+    if divergence_active
+        remaining_bars = divergence_valid_bars - (bar_index - divergence_bar)
+        remaining_hours = remaining_bars / 12
+        table.cell(info_table, 0, 2, "残り時間", text_color=color.white, bgcolor=color.gray)
+        table.cell(info_table, 1, 2, str.tostring(remaining_hours, "#.#") + "h", text_color=color.white, bgcolor=color.gray)
+    else
+        table.cell(info_table, 0, 2, "残り時間", text_color=color.white, bgcolor=color.gray)
+        table.cell(info_table, 1, 2, "-", text_color=color.white, bgcolor=color.gray)
+
+    // エントリー可能状態
+    table.cell(info_table, 0, 3, "環境認識", text_color=color.white, bgcolor=color.gray)
+    entry_text = setup_long ? "買い可能" : setup_short ? "売り可能" : "待機"
+    entry_color = setup_long ? color.new(color.lime, 30) : setup_short ? color.new(color.fuchsia, 30) : color.gray
+    table.cell(info_table, 1, 3, entry_text, text_color=color.white, bgcolor=entry_color)
+
+    // RCI状態
+    table.cell(info_table, 0, 4, "RCI短期(9)", text_color=color.white, bgcolor=color.gray)
+    rci_short_color = rci_short <= -rci_short_threshold ? color.new(color.blue, 30) : rci_short >= rci_short_threshold ? color.new(color.red, 30) : color.gray
+    table.cell(info_table, 1, 4, str.tostring(rci_short, "#.#"), text_color=color.white, bgcolor=rci_short_color)
+
+    table.cell(info_table, 0, 5, "RCI中期(14)", text_color=color.white, bgcolor=color.gray)
+    rci_mid_color = rci_mid <= -rci_mid_threshold ? color.new(color.blue, 30) : rci_mid >= rci_mid_threshold ? color.new(color.red, 30) : color.gray
+    table.cell(info_table, 1, 5, str.tostring(rci_mid, "#.#"), text_color=color.white, bgcolor=rci_mid_color)
+
+    // 1ダイバージェンス1エントリー状態
+    table.cell(info_table, 0, 6, "1Div1Entry", text_color=color.white, bgcolor=color.gray, tooltip="1ダイバージェンス1エントリー制限")
+    cooldown_text = divergence_ready ? "未使用" : divergence_active ? "使用済" : "なし"
+    cooldown_color = divergence_ready ? color.new(color.green, 30) : divergence_active ? color.new(color.orange, 30) : color.gray
+    table.cell(info_table, 1, 6, enable_1div1entry ? cooldown_text : "OFF", text_color=color.white, bgcolor=enable_1div1entry ? cooldown_color : color.gray)
+
+    // 説明
+    table.cell(info_table, 0, 7, "Ver7 Complete", text_color=color.white, bgcolor=color.navy)
+    table.cell(info_table, 1, 7, "統合版", text_color=color.white, bgcolor=color.navy)
+
+// ==========================================
+// アラート条件
+// ==========================================
+
+alertcondition(signal_long, "買いエントリー", "GBPJPY Ver7: 買いエントリーシグナル発生")
+alertcondition(signal_short, "売りエントリー", "GBPJPY Ver7: 売りエントリーシグナル発生")
+alertcondition(setup_long, "買いセットアップ完了", "GBPJPY Ver7: 買いエントリー可能（環境認識完了）")
+alertcondition(setup_short, "売りセットアップ完了", "GBPJPY Ver7: 売りエントリー可能（環境認識完了）")
+alertcondition(divergence_type == "hidden_long", "ヒドゥン買いダイバージェンス", "GBPJPY Ver7: ヒドゥン買いダイバージェンス検出")
+alertcondition(divergence_type == "hidden_short", "ヒドゥン売りダイバージェンス", "GBPJPY Ver7: ヒドゥン売りダイバージェンス検出")

@@ -1,6 +1,8 @@
 """
-System Ver7 - バックテストエンジン
+System Ver12 - バックテストエンジン
 MACDダイバージェンス戦略のバックテスト実行
+Ver12: 1H PO + Hidden Div + 5M RCI短期 + 5M パーフェクトオーダー
+      （Ver11から4H 50EMAフィルターを除去）
 """
 
 import pandas as pd
@@ -9,11 +11,11 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-import config_v7 as config
-from indicators_v7 import (
+import config_v12 as config
+from indicators_v12 import (
     calculate_rci, calculate_ema, calculate_macd, calculate_zigzag, calculate_atr,
     get_latest_zigzag_level, check_perfect_order,
-    check_5m_entry_long_v7, check_5m_entry_short_v7
+    check_5m_entry_long_v12, check_5m_entry_short_v12
 )
 
 
@@ -33,8 +35,8 @@ class Trade:
     divergence_type: str  # 'hidden' or 'regular'
 
 
-class BacktestEngineV7:
-    """System Ver7 バックテストエンジン"""
+class BacktestEngineV12:
+    """System Ver12 バックテストエンジン - 5分足パーフェクトオーダー追加、RCI中期削除"""
 
     def __init__(self, df_5m: pd.DataFrame, df_1h: pd.DataFrame, df_4h: pd.DataFrame):
         self.df_5m = df_5m.copy()
@@ -78,6 +80,11 @@ class BacktestEngineV7:
         self.df_5m['ZZ_Low'] = zz_lows_5m
         self.df_5m['ATR'] = calculate_atr(self.df_5m, config.SL_ATR_LENGTH)
 
+        # 5分足のEMA（Ver12: パーフェクトオーダー用）
+        self.df_5m['EMA_20'] = calculate_ema(self.df_5m, config.EMA_5M_SHORT)
+        self.df_5m['EMA_30'] = calculate_ema(self.df_5m, config.EMA_5M_MID)
+        self.df_5m['EMA_40'] = calculate_ema(self.df_5m, config.EMA_5M_LONG)
+
         # 1時間足のMACD
         macd_line, signal_line, histogram = calculate_macd(
             self.df_1h,
@@ -102,10 +109,13 @@ class BacktestEngineV7:
         # 1時間足のEMA（パターンC用）
         self.df_1h['EMA_200'] = calculate_ema(self.df_1h, 200)
 
+        # 1時間足のEMA（Ver12: パーフェクトオーダー用）
+        self.df_1h['EMA_20'] = calculate_ema(self.df_1h, config.EMA_1H_SHORT)
+        self.df_1h['EMA_30'] = calculate_ema(self.df_1h, config.EMA_1H_MID)
+        self.df_1h['EMA_40'] = calculate_ema(self.df_1h, config.EMA_1H_LONG)
+
         # 4時間足のEMA
-        self.df_4h['EMA_20'] = calculate_ema(self.df_4h, config.EMA_SHORT)
-        self.df_4h['EMA_30'] = calculate_ema(self.df_4h, config.EMA_MID)
-        self.df_4h['EMA_40'] = calculate_ema(self.df_4h, config.EMA_LONG)
+        self.df_4h['EMA_50'] = calculate_ema(self.df_4h, config.EMA_4H)
 
         print("インジケーター計算完了")
 
@@ -125,15 +135,23 @@ class BacktestEngineV7:
 
     def _check_4h_trend(self, data_4h: pd.Series) -> str:
         """4時間足のトレンドをチェック（4時間足50EMA単独）"""
-        # パターンA: 価格とEMA_20（50EMA）の単独比較
-        if pd.isna(data_4h['Close']) or pd.isna(data_4h['EMA_20']):
+        if pd.isna(data_4h['Close']) or pd.isna(data_4h['EMA_50']):
             return 'none'
-        if data_4h['Close'] > data_4h['EMA_20']:
+        if data_4h['Close'] > data_4h['EMA_50']:
             return 'uptrend'
-        elif data_4h['Close'] < data_4h['EMA_20']:
+        elif data_4h['Close'] < data_4h['EMA_50']:
             return 'downtrend'
         else:
             return 'none'
+
+    def _check_1h_perfect_order(self, data_1h: pd.Series) -> str:
+        """1時間足のパーフェクトオーダーをチェック（Ver12追加）"""
+        if data_1h is None:
+            return 'none'
+        ema_20 = data_1h.get('EMA_20', np.nan)
+        ema_30 = data_1h.get('EMA_30', np.nan)
+        ema_40 = data_1h.get('EMA_40', np.nan)
+        return check_perfect_order(ema_20, ema_30, ema_40)
 
     def _update_divergences(self, current_time: pd.Timestamp, trend_4h: str):
         """
@@ -160,22 +178,23 @@ class BacktestEngineV7:
         zz_low = self.df_1h['ZZ_Low'].iloc[pivot_idx]
         macd_at_pivot = self.df_1h['MACD'].iloc[pivot_idx]
 
+        # Ver12: ヒドゥンダイバージェンスのみ検出（4Hトレンド条件なし）
         if not pd.isna(zz_low) and self.prev_low_idx != pivot_idx:
             if not pd.isna(self.prev_low):
-                if zz_low > self.prev_low and macd_at_pivot < self.prev_macd_at_low and trend_4h == 'uptrend':
+                # ヒドゥン買い: 価格が切り上げ（押し目）、MACDが切り下げ
+                if zz_low > self.prev_low and macd_at_pivot < self.prev_macd_at_low:
                     self._set_divergence(current_time, 'hidden', 'long', zz_low, macd_at_pivot)
-                elif zz_low < self.prev_low and macd_at_pivot > self.prev_macd_at_low:
-                    self._set_divergence(current_time, 'regular', 'long', zz_low, macd_at_pivot)
+                # レギュラーは検出しない（Ver12）
             self.prev_low = zz_low
             self.prev_macd_at_low = macd_at_pivot
             self.prev_low_idx = pivot_idx
 
         if not pd.isna(zz_high) and self.prev_high_idx != pivot_idx:
             if not pd.isna(self.prev_high):
-                if zz_high < self.prev_high and macd_at_pivot > self.prev_macd_at_high and trend_4h == 'downtrend':
+                # ヒドゥン売り: 価格が切り下げ（戻り目）、MACDが切り上げ
+                if zz_high < self.prev_high and macd_at_pivot > self.prev_macd_at_high:
                     self._set_divergence(current_time, 'hidden', 'short', zz_high, macd_at_pivot)
-                elif zz_high > self.prev_high and macd_at_pivot < self.prev_macd_at_high:
-                    self._set_divergence(current_time, 'regular', 'short', zz_high, macd_at_pivot)
+                # レギュラーは検出しない（Ver12）
             self.prev_high = zz_high
             self.prev_macd_at_high = macd_at_pivot
             self.prev_high_idx = pivot_idx
@@ -239,7 +258,7 @@ class BacktestEngineV7:
         return self.current_divergence['direction'] == direction
 
     def _check_5m_entry(self, idx: int, direction: str) -> bool:
-        """5分足のエントリートリガーをチェック"""
+        """5分足のエントリートリガーをチェック（Ver12: RCI短期 + 5M パーフェクトオーダー）"""
         if idx == 0:
             return False
 
@@ -248,22 +267,24 @@ class BacktestEngineV7:
 
         rci_short_current = current['RCI_9']
         rci_short_previous = previous['RCI_9']
-        rci_mid_current = current['RCI_14']
-        rci_mid_previous = previous['RCI_14']
+
+        # 5分足のパーフェクトオーダーをチェック
+        ema_20 = current.get('EMA_20', np.nan)
+        ema_30 = current.get('EMA_30', np.nan)
+        ema_40 = current.get('EMA_40', np.nan)
+        perfect_order_5m = check_perfect_order(ema_20, ema_30, ema_40)
 
         if direction == 'long':
-            return check_5m_entry_long_v7(
+            return check_5m_entry_long_v12(
                 rci_short_current, rci_short_previous,
-                rci_mid_current, rci_mid_previous,
-                rci_short_threshold=config.RCI_OVERBOUGHT,
-                rci_mid_threshold=config.RCI_MID_OVERBOUGHT
+                perfect_order_5m,
+                rci_short_threshold=config.RCI_OVERBOUGHT
             )
         elif direction == 'short':
-            return check_5m_entry_short_v7(
+            return check_5m_entry_short_v12(
                 rci_short_current, rci_short_previous,
-                rci_mid_current, rci_mid_previous,
-                rci_short_threshold=config.RCI_OVERBOUGHT,
-                rci_mid_threshold=config.RCI_MID_OVERBOUGHT
+                perfect_order_5m,
+                rci_short_threshold=config.RCI_OVERBOUGHT
             )
 
         return False
@@ -359,16 +380,19 @@ class BacktestEngineV7:
                 if not self._is_trading_hours(current_time):
                     continue
 
-                if trend_4h == 'none':
-                    continue
+                # Ver12: 1Hパーフェクトオーダー + ヒドゥンダイバージェンス + 5M PO（4H 50EMA除去）
+                data_1h = self._get_1h_data_at_time(current_time)
+                perfect_order_1h = self._check_1h_perfect_order(data_1h)
 
-                # 買いエントリーチェック
-                if trend_4h == 'uptrend' and self._get_active_setup(current_time, 'long'):
+                # 買いエントリーチェック（1Hパーフェクトオーダー上昇 + ヒドゥンダイバージェンス）
+                if (perfect_order_1h == 'uptrend' and
+                    self._get_active_setup(current_time, 'long')):
                     if self._check_5m_entry(idx, 'long'):
                         self._open_position(idx, 'long')
 
-                # 売りエントリーチェック
-                elif trend_4h == 'downtrend' and self._get_active_setup(current_time, 'short'):
+                # 売りエントリーチェック（1Hパーフェクトオーダー下降 + ヒドゥンダイバージェンス）
+                elif (perfect_order_1h == 'downtrend' and
+                      self._get_active_setup(current_time, 'short')):
                     if self._check_5m_entry(idx, 'short'):
                         self._open_position(idx, 'short')
 

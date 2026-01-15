@@ -1,6 +1,6 @@
 """
-System Ver7 - MACD Divergence Strategy 設定ファイル
-ENTRY_LOGIC.md (Ver7) に基づくバックテスト設定
+System Ver8 - MACD Divergence Strategy 設定ファイル
+Ver8: 1時間足パーフェクトオーダー（20/30/40 EMA）追加
 """
 
 # ==========================================
@@ -34,17 +34,20 @@ TRADING_END_HOUR = 24    # 日本時間 24:00 (0:00)
 RCI_SHORT = 9   # 短期
 RCI_MID = 14    # 中期
 
-# RCI閾値（Ver7で変更）
+# RCI閾値
 RCI_OVERBOUGHT = 60       # 買われすぎ（短期用）
 RCI_OVERSOLD = -60        # 売られすぎ（短期用）
-RCI_MID_OVERBOUGHT = 40   # 買われすぎ（中期用）Ver7で追加
-RCI_MID_OVERSOLD = -40    # 売られすぎ（中期用）Ver7で追加
+RCI_MID_OVERBOUGHT = 40   # 買われすぎ（中期用）
+RCI_MID_OVERSOLD = -40    # 売られすぎ（中期用）
 
 # EMA (Exponential Moving Average) - 4時間足トレンド判定用
-# Ver7最適化版: 50EMA単独判定（価格 > 50EMA で上昇トレンド）
-EMA_SHORT = 50   # トレンド判定に使用
-EMA_MID = 75     # 未使用（互換性のため保持）
-EMA_LONG = 200   # 未使用（互換性のため保持）
+# Ver8: 50EMA単独判定（価格 > 50EMA で上昇トレンド）
+EMA_4H = 50   # 4時間足トレンド判定に使用
+
+# EMA (1時間足パーフェクトオーダー用) - Ver8で追加
+EMA_1H_SHORT = 20   # 1時間足短期EMA
+EMA_1H_MID = 30     # 1時間足中期EMA
+EMA_1H_LONG = 40    # 1時間足長期EMA
 
 # MACD (Moving Average Convergence Divergence) - 1時間足ダイバージェンス検出用
 MACD_FAST = 6       # 短期EMA
@@ -52,7 +55,7 @@ MACD_SLOW = 13      # 長期EMA
 MACD_SIGNAL = 4     # シグナルライン
 
 # ZigZag - ダイバージェンス検出用（1時間足）
-ZIGZAG_1H_DEPTH = 12      # Ver7: Depth 12でダイバージェンス検出
+ZIGZAG_1H_DEPTH = 12      # Depth 12でダイバージェンス検出
 ZIGZAG_1H_DEVIATION = 5
 ZIGZAG_1H_BACKSTEP = 3
 
@@ -97,10 +100,10 @@ BACKTEST_END = "2025-11-24"
 # ==========================================
 # 出力設定
 # ==========================================
-RESULTS_DIR = "./results_v7"
-REPORT_FILE = f"{RESULTS_DIR}/backtest_report_v7.txt"
-TRADES_CSV = f"{RESULTS_DIR}/trades_v7.csv"
-DIVERGENCES_CSV = f"{RESULTS_DIR}/divergences_v7.csv"  # ダイバージェンス記録
+RESULTS_DIR = "./results_v8"
+REPORT_FILE = f"{RESULTS_DIR}/backtest_report_v8.txt"
+TRADES_CSV = f"{RESULTS_DIR}/trades_v8.csv"
+DIVERGENCES_CSV = f"{RESULTS_DIR}/divergences_v8.csv"
 
 # ==========================================
 # その他

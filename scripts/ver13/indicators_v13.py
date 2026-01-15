@@ -1,6 +1,7 @@
 """
-System Ver7 - インジケーター計算モジュール
+System Ver13 - インジケーター計算モジュール
 RCI, EMA, MACD, ZigZag, ダイバージェンス検出
+Ver13: 1時間足パーフェクトオーダー（20/30/40 EMA）追加
 """
 
 import numpy as np
@@ -474,5 +475,53 @@ def check_5m_entry_short_v7(
     condition1 = rci_short_current >= rci_short_threshold
     condition2 = rci_short_current < rci_short_previous
     condition3 = rci_mid_current >= rci_mid_threshold and rci_mid_current < rci_mid_previous
+
+    return condition1 and condition2 and condition3
+
+
+def check_5m_entry_long_v13(
+    rci_short_current: float,
+    rci_short_previous: float,
+    perfect_order_5m: str,
+    rci_short_threshold: float = 60
+) -> bool:
+    """
+    Ver13: 5分足の買いエントリートリガーをチェック
+
+    条件:
+    1. RCI短期(9)が-60以下（売られすぎ圏からの反転）
+    2. RCI短期(9)が反転上昇（押し目完了）
+    3. 5分足パーフェクトオーダーが上昇トレンド（20>30>40 EMA）
+    """
+    if any(pd.isna([rci_short_current, rci_short_previous])):
+        return False
+
+    condition1 = rci_short_current <= -rci_short_threshold
+    condition2 = rci_short_current > rci_short_previous
+    condition3 = perfect_order_5m == 'uptrend'
+
+    return condition1 and condition2 and condition3
+
+
+def check_5m_entry_short_v13(
+    rci_short_current: float,
+    rci_short_previous: float,
+    perfect_order_5m: str,
+    rci_short_threshold: float = 60
+) -> bool:
+    """
+    Ver13: 5分足の売りエントリートリガーをチェック
+
+    条件:
+    1. RCI短期(9)が+60以上（買われすぎ圏からの反転）
+    2. RCI短期(9)が反転下落（戻り完了）
+    3. 5分足パーフェクトオーダーが下降トレンド（20<30<40 EMA）
+    """
+    if any(pd.isna([rci_short_current, rci_short_previous])):
+        return False
+
+    condition1 = rci_short_current >= rci_short_threshold
+    condition2 = rci_short_current < rci_short_previous
+    condition3 = perfect_order_5m == 'downtrend'
 
     return condition1 and condition2 and condition3

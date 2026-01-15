@@ -1,6 +1,7 @@
 """
-System Ver7 - インジケーター計算モジュール
+System Ver9 - インジケーター計算モジュール
 RCI, EMA, MACD, ZigZag, ダイバージェンス検出
+Ver9: 1時間足パーフェクトオーダー（20/30/40 EMA）追加
 """
 
 import numpy as np

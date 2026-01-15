@@ -1,0 +1,171 @@
+//@version=5
+indicator("GBPJPY Ver7 Phase2 - Entry Signal", overlay=true, max_bars_back=100)
+
+// ==========================================
+// 設定パラメータ
+// ==========================================
+
+// RCI設定
+rci_short_period = input.int(9, "RCI短期期間", minval=1, group="RCI設定")
+rci_mid_period = input.int(14, "RCI中期期間", minval=1, group="RCI設定")
+rci_short_threshold = input.int(60, "RCI短期閾値", minval=1, maxval=100, group="RCI設定")
+rci_mid_threshold = input.int(40, "RCI中期閾値", minval=1, maxval=100, group="RCI設定")
+
+// 表示設定
+show_rci_plot = input.bool(false, "RCIライン表示（サブウィンドウ）", group="表示設定")
+show_signals = input.bool(true, "シグナル矢印表示", group="表示設定")
+show_info_panel = input.bool(true, "情報パネル表示", group="表示設定")
+
+// 1 divergence = 1 entry 制限設定
+enable_1div1entry = input.bool(true, "1ダイバージェンス1エントリー制限", group="シグナル制限", tooltip="同じダイバージェンス期間内での重複シグナルを抑制")
+signal_cooldown_bars = input.int(144, "シグナル抑制期間（バー数）", minval=1, group="シグナル制限", tooltip="5分足で144本 = 12時間（ダイバージェンス有効期間）")
+
+// ==========================================
+// RCI計算関数
+// ==========================================
+
+// RCI (Rank Correlation Index) 計算
+rci(src, length) =>
+    // 順位相関係数の計算
+    sum_d2 = 0.0
+
+    // 価格の順位を計算
+    for i = 0 to length - 1
+        rank_price = 0.0
+        rank_time = length - i
+
+        // 価格順位の計算（降順）
+        for j = 0 to length - 1
+            if src[j] > src[i]
+                rank_price += 1
+            else if src[j] == src[i] and j < i
+                rank_price += 1
+
+        rank_price := rank_price + 1
+
+        // 順位差の2乗
+        d = rank_time - rank_price
+        sum_d2 += d * d
+
+    // RCI計算
+    n = length
+    rci_value = (1 - (6 * sum_d2) / (n * (n * n - 1))) * 100
+    rci_value
+
+// RCI計算
+rci_short = rci(close, rci_short_period)
+rci_mid = rci(close, rci_mid_period)
+
+// ==========================================
+// エントリーシグナル検出
+// ==========================================
+
+// 買いシグナル条件
+// 1. RCI短期が-60以下
+// 2. RCI短期が反転上昇（前回より大きい）
+// 3. RCI中期が-40以下で上昇中
+long_condition_1 = rci_short <= -rci_short_threshold
+long_condition_2 = rci_short > rci_short[1]  // Hook Up（反転上昇）
+long_condition_3 = rci_mid <= -rci_mid_threshold and rci_mid > rci_mid[1]
+
+raw_signal_long = long_condition_1 and long_condition_2 and long_condition_3
+
+// 売りシグナル条件
+// 1. RCI短期が+60以上
+// 2. RCI短期が反転下落（前回より小さい）
+// 3. RCI中期が+40以上で下落中
+short_condition_1 = rci_short >= rci_short_threshold
+short_condition_2 = rci_short < rci_short[1]  // Hook Down（反転下落）
+short_condition_3 = rci_mid >= rci_mid_threshold and rci_mid < rci_mid[1]
+
+raw_signal_short = short_condition_1 and short_condition_2 and short_condition_3
+
+// ==========================================
+// 1 divergence = 1 entry 制限ロジック
+// ==========================================
+
+// 前回の「有効な」シグナルからの経過バー数を追跡
+var int bars_since_valid_long = signal_cooldown_bars + 1
+var int bars_since_valid_short = signal_cooldown_bars + 1
+
+// クールダウン期間チェック（前回の有効シグナルから十分な時間が経過したか）
+long_cooldown_ok = bars_since_valid_long >= signal_cooldown_bars
+short_cooldown_ok = bars_since_valid_short >= signal_cooldown_bars
+
+// 制限適用：クールダウン期間内の重複シグナルを抑制
+signal_long = raw_signal_long and (not enable_1div1entry or long_cooldown_ok)
+signal_short = raw_signal_short and (not enable_1div1entry or short_cooldown_ok)
+
+// 有効シグナル発生時にカウンターリセット
+if signal_long
+    bars_since_valid_long := 0
+else
+    bars_since_valid_long := bars_since_valid_long + 1
+
+if signal_short
+    bars_since_valid_short := 0
+else
+    bars_since_valid_short := bars_since_valid_short + 1
+
+// ==========================================
+// シグナル表示
+// ==========================================
+
+// 矢印マーカー表示
+plotshape(show_signals and signal_long, title="買いシグナル", location=location.belowbar, color=color.new(color.lime, 0), style=shape.triangleup, size=size.small, text="買")
+plotshape(show_signals and signal_short, title="売りシグナル", location=location.abovebar, color=color.new(color.fuchsia, 0), style=shape.triangledown, size=size.small, text="売")
+
+// ==========================================
+// RCIプロット（オプション）
+// ==========================================
+
+// サブウィンドウ表示用（通常はOFF）
+// ※表示する場合はoverlayをfalseに変更する必要があります
+
+// ==========================================
+// 情報パネル
+// ==========================================
+
+var table info_table = table.new(position.top_left, 2, 6, border_width=1)
+
+if barstate.islast and show_info_panel
+    // RCI短期
+    table.cell(info_table, 0, 0, "RCI短期(9)", text_color=color.white, bgcolor=color.gray)
+    rci_short_color = rci_short <= -rci_short_threshold ? color.new(color.blue, 30) : rci_short >= rci_short_threshold ? color.new(color.red, 30) : color.gray
+    table.cell(info_table, 1, 0, str.tostring(rci_short, "#.#"), text_color=color.white, bgcolor=rci_short_color)
+
+    // RCI中期
+    table.cell(info_table, 0, 1, "RCI中期(14)", text_color=color.white, bgcolor=color.gray)
+    rci_mid_color = rci_mid <= -rci_mid_threshold ? color.new(color.blue, 30) : rci_mid >= rci_mid_threshold ? color.new(color.red, 30) : color.gray
+    table.cell(info_table, 1, 1, str.tostring(rci_mid, "#.#"), text_color=color.white, bgcolor=rci_mid_color)
+
+    // 短期トレンド
+    table.cell(info_table, 0, 2, "短期方向", text_color=color.white, bgcolor=color.gray)
+    short_trend = rci_short > rci_short[1] ? "↑" : rci_short < rci_short[1] ? "↓" : "→"
+    short_trend_color = rci_short > rci_short[1] ? color.green : rci_short < rci_short[1] ? color.red : color.gray
+    table.cell(info_table, 1, 2, short_trend, text_color=color.white, bgcolor=short_trend_color)
+
+    // シグナル状態
+    table.cell(info_table, 0, 3, "シグナル", text_color=color.white, bgcolor=color.gray)
+    signal_text = signal_long ? "買い" : signal_short ? "売り" : "待機"
+    signal_color = signal_long ? color.new(color.lime, 30) : signal_short ? color.new(color.fuchsia, 30) : color.gray
+    table.cell(info_table, 1, 3, signal_text, text_color=color.white, bgcolor=signal_color)
+
+    // クールダウン状態（1div=1entry制限）
+    table.cell(info_table, 0, 4, "クールダウン", text_color=color.white, bgcolor=color.gray, tooltip="1ダイバージェンス1エントリー制限")
+    cooldown_long_pct = math.min(100, bars_since_valid_long * 100 / signal_cooldown_bars)
+    cooldown_short_pct = math.min(100, bars_since_valid_short * 100 / signal_cooldown_bars)
+    cooldown_text = "買:" + str.tostring(cooldown_long_pct, "#") + "% 売:" + str.tostring(cooldown_short_pct, "#") + "%"
+    cooldown_color = (long_cooldown_ok and short_cooldown_ok) ? color.new(color.green, 30) : color.new(color.orange, 30)
+    table.cell(info_table, 1, 4, enable_1div1entry ? cooldown_text : "OFF", text_color=color.white, bgcolor=enable_1div1entry ? cooldown_color : color.gray)
+
+    // 説明
+    table.cell(info_table, 0, 5, "Ver7 Phase2", text_color=color.white, bgcolor=color.navy, tooltip="エントリーシグナル")
+    table.cell(info_table, 1, 5, "RCIシグナル", text_color=color.white, bgcolor=color.navy)
+
+// ==========================================
+// アラート条件
+// ==========================================
+
+alertcondition(signal_long, "買いシグナル発生", "GBPJPY Ver7: 買いエントリーシグナル（RCI反転）")
+alertcondition(signal_short, "売りシグナル発生", "GBPJPY Ver7: 売りエントリーシグナル（RCI反転）")

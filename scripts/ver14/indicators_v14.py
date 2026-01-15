@@ -1,6 +1,7 @@
 """
-System Ver7 - インジケーター計算モジュール
+System Ver14 - インジケーター計算モジュール
 RCI, EMA, MACD, ZigZag, ダイバージェンス検出
+Ver14: 1時間足RCI短期±60条件を追加
 """
 
 import numpy as np
@@ -257,222 +258,80 @@ def check_perfect_order(ema_short: float, ema_mid: float, ema_long: float) -> st
         return 'none'
 
 
-def detect_divergence(df: pd.DataFrame, zz_highs: pd.Series, zz_lows: pd.Series,
-                     macd_line: pd.Series, current_idx: int,
-                     trend_4h: str) -> Optional[Dict]:
+def check_1h_rci_condition(rci_value: float, direction: str, threshold: float = 60) -> bool:
     """
-    ダイバージェンスを検出
+    Ver14: 1時間足RCI条件をチェック
 
     Parameters:
     -----------
-    df : pd.DataFrame
-        1時間足データ
-    zz_highs : pd.Series
-        ZigZag高値系列
-    zz_lows : pd.Series
-        ZigZag安値系列
-    macd_line : pd.Series
-        MACDライン
-    current_idx : int
-        現在のインデックス
-    trend_4h : str
-        4時間足のトレンド ('uptrend' or 'downtrend')
+    rci_value : float
+        1時間足RCI短期の値
+    direction : str
+        'long' or 'short'
+    threshold : float
+        閾値（デフォルト: 60）
 
     Returns:
     --------
-    Optional[Dict]
-        ダイバージェンス情報 or None
-        {
-            'type': 'hidden' or 'regular',
-            'direction': 'long' or 'short',
-            'detected_time': Timestamp,
-            'price1': float, 'price2': float,
-            'macd1': float, 'macd2': float
-        }
+    bool
+        条件を満たしている場合True
     """
-    if trend_4h == 'none':
-        return None
+    if pd.isna(rci_value):
+        return False
 
-    # 上昇トレンドの場合、安値（底）を見る
-    if trend_4h == 'uptrend':
-        return _detect_bullish_divergence(df, zz_lows, macd_line, current_idx)
+    if direction == 'long':
+        # ロング: RCIが-60以下（売られすぎ）
+        return rci_value <= -threshold
+    elif direction == 'short':
+        # ショート: RCIが+60以上（買われすぎ）
+        return rci_value >= threshold
 
-    # 下降トレンドの場合、高値（頂点）を見る
-    elif trend_4h == 'downtrend':
-        return _detect_bearish_divergence(df, zz_highs, macd_line, current_idx)
-
-    return None
-
-
-def _detect_bullish_divergence(df: pd.DataFrame, zz_lows: pd.Series,
-                               macd_line: pd.Series, current_idx: int) -> Optional[Dict]:
-    """
-    買いダイバージェンスを検出
-
-    上昇トレンド中に安値（底）で発生：
-    - ヒドゥン：価格が切り上げ（押し目）、MACDが切り下げ → トレンド継続
-    - レギュラー：価格が切り下げ（安値更新）、MACDが切り上げ → 反転上昇
-    """
-    # 直近2つの安値を取得
-    lows_list = []
-    for i in range(current_idx, max(0, current_idx - 50), -1):
-        if not pd.isna(zz_lows.iloc[i]):
-            lows_list.append({
-                'idx': i,
-                'time': df.index[i],
-                'price': zz_lows.iloc[i],
-                'macd': macd_line.iloc[i]
-            })
-        if len(lows_list) >= 2:
-            break
-
-    if len(lows_list) < 2:
-        return None
-
-    # 新しい方がlows_list[0]、古い方がlows_list[1]
-    newer = lows_list[0]
-    older = lows_list[1]
-
-    # 価格とMACDの関係を判定
-    price_higher = newer['price'] > older['price']  # 価格が切り上げ
-    price_lower = newer['price'] < older['price']   # 価格が切り下げ
-    macd_higher = newer['macd'] > older['macd']     # MACDが切り上げ
-    macd_lower = newer['macd'] < older['macd']      # MACDが切り下げ
-
-    # ヒドゥン・ダイバージェンス（推奨）：価格↑、MACD↓
-    if price_higher and macd_lower:
-        return {
-            'type': 'hidden',
-            'direction': 'long',
-            'detected_time': newer['time'],
-            'price1': older['price'],
-            'price2': newer['price'],
-            'macd1': older['macd'],
-            'macd2': newer['macd']
-        }
-
-    # レギュラー・ダイバージェンス：価格↓、MACD↑
-    if price_lower and macd_higher:
-        return {
-            'type': 'regular',
-            'direction': 'long',
-            'detected_time': newer['time'],
-            'price1': older['price'],
-            'price2': newer['price'],
-            'macd1': older['macd'],
-            'macd2': newer['macd']
-        }
-
-    return None
+    return False
 
 
-def _detect_bearish_divergence(df: pd.DataFrame, zz_highs: pd.Series,
-                               macd_line: pd.Series, current_idx: int) -> Optional[Dict]:
-    """
-    売りダイバージェンスを検出
-
-    下降トレンド中に高値（頂点）で発生：
-    - ヒドゥン：価格が切り下げ（戻り目）、MACDが切り上げ → トレンド継続
-    - レギュラー：価格が切り上げ（高値更新）、MACDが切り下げ → 反転下落
-    """
-    # 直近2つの高値を取得
-    highs_list = []
-    for i in range(current_idx, max(0, current_idx - 50), -1):
-        if not pd.isna(zz_highs.iloc[i]):
-            highs_list.append({
-                'idx': i,
-                'time': df.index[i],
-                'price': zz_highs.iloc[i],
-                'macd': macd_line.iloc[i]
-            })
-        if len(highs_list) >= 2:
-            break
-
-    if len(highs_list) < 2:
-        return None
-
-    newer = highs_list[0]
-    older = highs_list[1]
-
-    price_higher = newer['price'] > older['price']
-    price_lower = newer['price'] < older['price']
-    macd_higher = newer['macd'] > older['macd']
-    macd_lower = newer['macd'] < older['macd']
-
-    # ヒドゥン・ダイバージェンス（推奨）：価格↓、MACD↑
-    if price_lower and macd_higher:
-        return {
-            'type': 'hidden',
-            'direction': 'short',
-            'detected_time': newer['time'],
-            'price1': older['price'],
-            'price2': newer['price'],
-            'macd1': older['macd'],
-            'macd2': newer['macd']
-        }
-
-    # レギュラー・ダイバージェンス：価格↑、MACD↓
-    if price_higher and macd_lower:
-        return {
-            'type': 'regular',
-            'direction': 'short',
-            'detected_time': newer['time'],
-            'price1': older['price'],
-            'price2': newer['price'],
-            'macd1': older['macd'],
-            'macd2': newer['macd']
-        }
-
-    return None
-
-
-def check_5m_entry_long_v7(
+def check_5m_entry_long_v14(
     rci_short_current: float,
     rci_short_previous: float,
-    rci_mid_current: float,
-    rci_mid_previous: float,
-    rci_short_threshold: float = 60,
-    rci_mid_threshold: float = 40
+    perfect_order_5m: str,
+    rci_short_threshold: float = 60
 ) -> bool:
     """
-    Ver7: 5分足の買いエントリートリガーをチェック（順張り - パターンA）
+    Ver14: 5分足の買いエントリートリガーをチェック
 
     条件:
     1. RCI短期(9)が-60以下（売られすぎ圏からの反転）
     2. RCI短期(9)が反転上昇（押し目完了）
-    3. RCI中期(14)が-40以下 かつ 上昇中（下げ過ぎからの回復）
+    3. 5分足パーフェクトオーダーが上昇トレンド（20>30>40 EMA）
     """
-    if any(pd.isna([rci_short_current, rci_short_previous, rci_mid_current, rci_mid_previous])):
+    if any(pd.isna([rci_short_current, rci_short_previous])):
         return False
 
     condition1 = rci_short_current <= -rci_short_threshold
     condition2 = rci_short_current > rci_short_previous
-    condition3 = rci_mid_current <= -rci_mid_threshold and rci_mid_current > rci_mid_previous
+    condition3 = perfect_order_5m == 'uptrend'
 
     return condition1 and condition2 and condition3
 
 
-def check_5m_entry_short_v7(
+def check_5m_entry_short_v14(
     rci_short_current: float,
     rci_short_previous: float,
-    rci_mid_current: float,
-    rci_mid_previous: float,
-    rci_short_threshold: float = 60,
-    rci_mid_threshold: float = 40
+    perfect_order_5m: str,
+    rci_short_threshold: float = 60
 ) -> bool:
     """
-    Ver7: 5分足の売りエントリートリガーをチェック（順張り - パターンA）
+    Ver14: 5分足の売りエントリートリガーをチェック
 
     条件:
     1. RCI短期(9)が+60以上（買われすぎ圏からの反転）
     2. RCI短期(9)が反転下落（戻り完了）
-    3. RCI中期(14)が+40以上 かつ 下落中（上げ過ぎからの調整）
+    3. 5分足パーフェクトオーダーが下降トレンド（20<30<40 EMA）
     """
-    if any(pd.isna([rci_short_current, rci_short_previous, rci_mid_current, rci_mid_previous])):
+    if any(pd.isna([rci_short_current, rci_short_previous])):
         return False
 
     condition1 = rci_short_current >= rci_short_threshold
     condition2 = rci_short_current < rci_short_previous
-    condition3 = rci_mid_current >= rci_mid_threshold and rci_mid_current < rci_mid_previous
+    condition3 = perfect_order_5m == 'downtrend'
 
     return condition1 and condition2 and condition3
