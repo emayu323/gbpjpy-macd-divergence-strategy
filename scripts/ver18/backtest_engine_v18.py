@@ -47,12 +47,26 @@ class BacktestEngineV18:
         self.divergences: List[Dict] = []
         self.current_divergence: Optional[Dict] = None
         self.current_divergence_used = False
+        # 暫定ピボット追跡（見込みダイバー用）
         self.prev_prospective_low = np.nan
         self.prev_prospective_low_idx = np.nan
-        self.prev_macd_at_prospective_low = np.nan
         self.prev_prospective_high = np.nan
         self.prev_prospective_high_idx = np.nan
-        self.prev_macd_at_prospective_high = np.nan
+        # 確定ピボット追跡（確定ダイバー用 - PineScript準拠）
+        self.pivot_low_1 = np.nan
+        self.pivot_low_2 = np.nan
+        self.pivot_low_1_idx = np.nan
+        self.pivot_low_2_idx = np.nan
+        self.macd_at_low_1 = np.nan
+        self.macd_at_low_2 = np.nan
+        self.pivot_high_1 = np.nan
+        self.pivot_high_2 = np.nan
+        self.pivot_high_1_idx = np.nan
+        self.pivot_high_2_idx = np.nan
+        self.macd_at_high_1 = np.nan
+        self.macd_at_high_2 = np.nan
+        # ZigZag方向追跡
+        self.prev_zz_dir = 0
         self._calculate_indicators()
 
     def _calculate_indicators(self):
@@ -75,7 +89,7 @@ class BacktestEngineV18:
         self.df_1h['MACD_Hist'] = histogram
 
         (zz_highs_1h, zz_lows_1h, prospective_high, prospective_low,
-         prospective_high_idx, prospective_low_idx) = calculate_zigzag_with_prospective(
+         prospective_high_idx, prospective_low_idx, zz_direction) = calculate_zigzag_with_prospective(
             self.df_1h, depth=config.ZIGZAG_1H_DEPTH,
             deviation=config.ZIGZAG_1H_DEVIATION, backstep=config.ZIGZAG_1H_BACKSTEP)
         self.df_1h['ZZ_High'] = zz_highs_1h
@@ -84,6 +98,7 @@ class BacktestEngineV18:
         self.df_1h['Prospective_Low'] = prospective_low
         self.df_1h['Prospective_High_Idx'] = prospective_high_idx
         self.df_1h['Prospective_Low_Idx'] = prospective_low_idx
+        self.df_1h['ZZ_Direction'] = zz_direction
 
         self.df_1h['EMA_20'] = calculate_ema(self.df_1h, config.EMA_1H_SHORT)
         self.df_1h['EMA_30'] = calculate_ema(self.df_1h, config.EMA_1H_MID)
@@ -115,53 +130,97 @@ class BacktestEngineV18:
         return check_1h_rci_condition(rci_value, direction, config.RCI_1H_THRESHOLD)
 
     def _update_divergences(self, current_time: pd.Timestamp):
+        """
+        ダイバージェンス検出（PineScript ver16_19_1h_environment.pine 準拠）
+        """
         mask_1h = self.df_1h.index <= current_time
         if mask_1h.sum() == 0:
             return
         idx_1h = mask_1h.sum() - 1
 
+        current_zz_dir = self.df_1h['ZZ_Direction'].iloc[idx_1h]
         current_prospective_low = self.df_1h['Prospective_Low'].iloc[idx_1h]
         current_prospective_low_idx = self.df_1h['Prospective_Low_Idx'].iloc[idx_1h]
         current_prospective_high = self.df_1h['Prospective_High'].iloc[idx_1h]
         current_prospective_high_idx = self.df_1h['Prospective_High_Idx'].iloc[idx_1h]
 
-        current_macd_at_low = np.nan
+        macd_at_prospective_low = np.nan
         if not pd.isna(current_prospective_low_idx):
-            current_macd_at_low = self.df_1h['MACD'].iloc[int(current_prospective_low_idx)]
+            macd_at_prospective_low = self.df_1h['MACD'].iloc[int(current_prospective_low_idx)]
 
-        current_macd_at_high = np.nan
+        macd_at_prospective_high = np.nan
         if not pd.isna(current_prospective_high_idx):
-            current_macd_at_high = self.df_1h['MACD'].iloc[int(current_prospective_high_idx)]
+            macd_at_prospective_high = self.df_1h['MACD'].iloc[int(current_prospective_high_idx)]
 
-        if (not pd.isna(current_prospective_low) and not pd.isna(current_prospective_low_idx) and
-            current_prospective_low_idx != self.prev_prospective_low_idx):
-            if not pd.isna(self.prev_prospective_low) and not pd.isna(self.prev_macd_at_prospective_low):
-                if (config.USE_HIDDEN_DIVERGENCE and
-                    current_prospective_low > self.prev_prospective_low and
-                    current_macd_at_low < self.prev_macd_at_prospective_low):
-                    self._set_divergence(current_time, 'hidden', 'long', current_prospective_low, current_macd_at_low)
-                elif (config.USE_REGULAR_DIVERGENCE and
-                      current_prospective_low < self.prev_prospective_low and
-                      current_macd_at_low > self.prev_macd_at_prospective_low):
-                    self._set_divergence(current_time, 'regular', 'long', current_prospective_low, current_macd_at_low)
-            self.prev_prospective_low = current_prospective_low
-            self.prev_prospective_low_idx = current_prospective_low_idx
-            self.prev_macd_at_prospective_low = current_macd_at_low
+        dir_changed = current_zz_dir != self.prev_zz_dir and self.prev_zz_dir != 0
 
-        if (not pd.isna(current_prospective_high) and not pd.isna(current_prospective_high_idx) and
-            current_prospective_high_idx != self.prev_prospective_high_idx):
-            if not pd.isna(self.prev_prospective_high) and not pd.isna(self.prev_macd_at_prospective_high):
+        if dir_changed:
+            if current_zz_dir > 0:
+                self.pivot_low_2 = self.pivot_low_1
+                self.pivot_low_2_idx = self.pivot_low_1_idx
+                self.macd_at_low_2 = self.macd_at_low_1
+                self.pivot_low_1 = self.prev_prospective_low
+                self.pivot_low_1_idx = self.prev_prospective_low_idx
+                if not pd.isna(self.prev_prospective_low_idx):
+                    self.macd_at_low_1 = self.df_1h['MACD'].iloc[int(self.prev_prospective_low_idx)]
+
+                if (not pd.isna(self.pivot_low_1) and not pd.isna(self.pivot_low_2) and
+                    not pd.isna(self.macd_at_low_1) and not pd.isna(self.macd_at_low_2)):
+                    if (config.USE_HIDDEN_DIVERGENCE and
+                        self.pivot_low_1 > self.pivot_low_2 and
+                        self.macd_at_low_1 < self.macd_at_low_2):
+                        self._set_divergence(current_time, 'hidden', 'long', self.pivot_low_1, self.macd_at_low_1, 'confirmed')
+                    elif (config.USE_REGULAR_DIVERGENCE and
+                          self.pivot_low_1 < self.pivot_low_2 and
+                          self.macd_at_low_1 > self.macd_at_low_2):
+                        self._set_divergence(current_time, 'regular', 'long', self.pivot_low_1, self.macd_at_low_1, 'confirmed')
+            else:
+                self.pivot_high_2 = self.pivot_high_1
+                self.pivot_high_2_idx = self.pivot_high_1_idx
+                self.macd_at_high_2 = self.macd_at_high_1
+                self.pivot_high_1 = self.prev_prospective_high
+                self.pivot_high_1_idx = self.prev_prospective_high_idx
+                if not pd.isna(self.prev_prospective_high_idx):
+                    self.macd_at_high_1 = self.df_1h['MACD'].iloc[int(self.prev_prospective_high_idx)]
+
+                if (not pd.isna(self.pivot_high_1) and not pd.isna(self.pivot_high_2) and
+                    not pd.isna(self.macd_at_high_1) and not pd.isna(self.macd_at_high_2)):
+                    if (config.USE_HIDDEN_DIVERGENCE and
+                        self.pivot_high_1 < self.pivot_high_2 and
+                        self.macd_at_high_1 > self.macd_at_high_2):
+                        self._set_divergence(current_time, 'hidden', 'short', self.pivot_high_1, self.macd_at_high_1, 'confirmed')
+                    elif (config.USE_REGULAR_DIVERGENCE and
+                          self.pivot_high_1 > self.pivot_high_2 and
+                          self.macd_at_high_1 < self.macd_at_high_2):
+                        self._set_divergence(current_time, 'regular', 'short', self.pivot_high_1, self.macd_at_high_1, 'confirmed')
+
+        if current_zz_dir < 0 and not pd.isna(self.pivot_low_1) and not pd.isna(current_prospective_low):
+            if not pd.isna(macd_at_prospective_low) and not pd.isna(self.macd_at_low_1):
                 if (config.USE_HIDDEN_DIVERGENCE and
-                    current_prospective_high < self.prev_prospective_high and
-                    current_macd_at_high > self.prev_macd_at_prospective_high):
-                    self._set_divergence(current_time, 'hidden', 'short', current_prospective_high, current_macd_at_high)
+                    current_prospective_low > self.pivot_low_1 and
+                    macd_at_prospective_low < self.macd_at_low_1):
+                    self._set_divergence(current_time, 'hidden', 'long', current_prospective_low, macd_at_prospective_low, 'prospective')
                 elif (config.USE_REGULAR_DIVERGENCE and
-                      current_prospective_high > self.prev_prospective_high and
-                      current_macd_at_high < self.prev_macd_at_prospective_high):
-                    self._set_divergence(current_time, 'regular', 'short', current_prospective_high, current_macd_at_high)
-            self.prev_prospective_high = current_prospective_high
-            self.prev_prospective_high_idx = current_prospective_high_idx
-            self.prev_macd_at_prospective_high = current_macd_at_high
+                      current_prospective_low < self.pivot_low_1 and
+                      macd_at_prospective_low > self.macd_at_low_1):
+                    self._set_divergence(current_time, 'regular', 'long', current_prospective_low, macd_at_prospective_low, 'prospective')
+
+        if current_zz_dir > 0 and not pd.isna(self.pivot_high_1) and not pd.isna(current_prospective_high):
+            if not pd.isna(macd_at_prospective_high) and not pd.isna(self.macd_at_high_1):
+                if (config.USE_HIDDEN_DIVERGENCE and
+                    current_prospective_high < self.pivot_high_1 and
+                    macd_at_prospective_high > self.macd_at_high_1):
+                    self._set_divergence(current_time, 'hidden', 'short', current_prospective_high, macd_at_prospective_high, 'prospective')
+                elif (config.USE_REGULAR_DIVERGENCE and
+                      current_prospective_high > self.pivot_high_1 and
+                      macd_at_prospective_high < self.macd_at_high_1):
+                    self._set_divergence(current_time, 'regular', 'short', current_prospective_high, macd_at_prospective_high, 'prospective')
+
+        self.prev_zz_dir = current_zz_dir
+        self.prev_prospective_low = current_prospective_low
+        self.prev_prospective_low_idx = current_prospective_low_idx
+        self.prev_prospective_high = current_prospective_high
+        self.prev_prospective_high_idx = current_prospective_high_idx
 
         if self.current_divergence is not None:
             valid_time_threshold = current_time - timedelta(hours=config.DIVERGENCE_VALID_HOURS)
@@ -169,10 +228,10 @@ class BacktestEngineV18:
                 self.current_divergence = None
                 self.current_divergence_used = False
 
-    def _set_divergence(self, current_time, div_type, direction, price, macd_value):
+    def _set_divergence(self, current_time, div_type, direction, price, macd_value, pivot_type='prospective'):
         divergence = {
             'type': div_type, 'direction': direction, 'detected_time': current_time,
-            'price': price, 'macd': macd_value, 'pivot_type': 'prospective'
+            'price': price, 'macd': macd_value, 'pivot_type': pivot_type
         }
         self.current_divergence = divergence
         self.current_divergence_used = False

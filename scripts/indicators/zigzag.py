@@ -14,7 +14,7 @@ def calculate_zigzag_with_prospective(
     depth: int = 12,
     deviation: float = 5.0,
     backstep: int = 3
-) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     ZigZag インジケーターを計算（暫定ピボット対応版）
     sukepoyo_sub.pine のZigZagロジックに準拠
@@ -41,8 +41,8 @@ def calculate_zigzag_with_prospective(
 
     Returns:
     --------
-    Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]
-        (確定高値, 確定安値, 暫定高値先端, 暫定安値先端, 暫定高値インデックス, 暫定安値インデックス)
+    Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]
+        (確定高値, 確定安値, 暫定高値先端, 暫定安値先端, 暫定高値インデックス, 暫定安値インデックス, ZigZag方向)
     """
     highs = df['High'].values
     lows = df['Low'].values
@@ -161,7 +161,7 @@ def calculate_zigzag_with_prospective(
         prev_dir = current_dir
 
     return (zz_highs, zz_lows, prospective_high, prospective_low,
-            prospective_high_idx, prospective_low_idx)
+            prospective_high_idx, prospective_low_idx, zz_direction)
 
 
 def calculate_zigzag(

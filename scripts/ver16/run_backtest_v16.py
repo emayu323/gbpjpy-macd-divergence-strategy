@@ -22,9 +22,29 @@ def load_data():
     """ローソク足データを読み込む"""
     print("データを読み込み中...")
 
-    df_5m = pd.read_csv(config.DATA_5M, parse_dates=['Time'], index_col='Time')
-    df_1h = pd.read_csv(config.DATA_1H, parse_dates=['Time'], index_col='Time')
-    df_4h = pd.read_csv(config.DATA_4H, parse_dates=['Time'], index_col='Time')
+    # CSVの列名が'Local time'なので対応
+    df_5m = pd.read_csv(config.DATA_5M)
+    df_1h = pd.read_csv(config.DATA_1H)
+    df_4h = pd.read_csv(config.DATA_4H)
+
+    # 列名の正規化とインデックス設定
+    for df in [df_5m, df_1h, df_4h]:
+        if 'Local time' in df.columns:
+            df.rename(columns={'Local time': 'Time'}, inplace=True)
+
+    # 日時パース（複数フォーマットに対応）
+    def parse_datetime(df):
+        try:
+            df['Time'] = pd.to_datetime(df['Time'], format='%d.%m.%Y %H:%M:%S.%f GMT%z')
+        except Exception:
+            df['Time'] = pd.to_datetime(df['Time'], dayfirst=True)
+        df.set_index('Time', inplace=True)
+        df.index = df.index.tz_localize(None) if df.index.tz else df.index
+        return df
+
+    df_5m = parse_datetime(df_5m)
+    df_1h = parse_datetime(df_1h)
+    df_4h = parse_datetime(df_4h)
 
     # バックテスト期間でフィルタ
     start_date = pd.to_datetime(config.BACKTEST_START)

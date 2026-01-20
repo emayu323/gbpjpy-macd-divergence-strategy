@@ -1,9 +1,9 @@
-//@version=5
-indicator("Ver16-19 RCI Panel", overlay=false)
+//@version=6
+indicator("Ver16-19 RCI Signal", overlay=true)
 
 // ==========================================
-// Ver16-19 RCIパネル
-// - RCI(9) ±70到達と反転を可視化
+// Ver16-19 RCIシグナル（メインウィンドウ）
+// - RCI(9) ±70到達と反転を背景色で表示
 // ==========================================
 
 // === 設定 ===
@@ -14,22 +14,18 @@ rci_threshold = input.int(70, "RCI閾値", minval=50, maxval=95)
 rci(src, length) =>
     sum_d2 = 0.0
     for i = 0 to length - 1
-        price_rank = 0.0
         count_less = 0
         count_equal = 0
         current_price = src[i]
         for j = 0 to length - 1
-            if src[j] < current_price
-                count_less += 1
-            else if src[j] == current_price
-                count_equal += 1
-        price_rank := 1 + count_less + (count_equal - 1) / 2.0
+            count_less := src[j] < current_price ? count_less + 1 : count_less
+            count_equal := src[j] == current_price ? count_equal + 1 : count_equal
+        price_rank = 1 + count_less + (count_equal - 1) / 2.0
         time_rank = length - i
         d = price_rank - time_rank
         sum_d2 += d * d
     n = length
-    rci_val = (1 - 6 * sum_d2 / (n * (n * n - 1))) * 100
-    rci_val
+    (1 - 6 * sum_d2 / (n * (n * n - 1))) * 100
 
 // === 値計算 ===
 rci_value = rci(close, rci_length)
@@ -37,33 +33,23 @@ rci_prev1 = rci_value[1]
 rci_prev2 = rci_value[2]
 
 // === 条件判定 ===
-// -70以下に到達後、反転上昇
+// -70以下に到達後、反転上昇（買いトリガー）
 reached_oversold = rci_prev1 <= -rci_threshold or rci_prev2 <= -rci_threshold
 hook_up = rci_value > rci_prev1
 long_trigger = reached_oversold and hook_up
 
-// +70以上に到達後、反転下落
+// +70以上に到達後、反転下落（売りトリガー）
 reached_overbought = rci_prev1 >= rci_threshold or rci_prev2 >= rci_threshold
 hook_down = rci_value < rci_prev1
 short_trigger = reached_overbought and hook_down
 
-// === RCIの色分け ===
-rci_color = rci_value >= rci_threshold ? color.red :
-            rci_value <= -rci_threshold ? color.green :
-            color.gray
+// === 背景色でシグナル表示 ===
+bgcolor(long_trigger ? color.new(color.green, 70) : na, title="Long Signal")
+bgcolor(short_trigger ? color.new(color.red, 70) : na, title="Short Signal")
 
-// === 表示 ===
-plot(rci_value, "RCI(9)", color=rci_color, linewidth=2)
-
-// 閾値ライン
-hline(rci_threshold, "上限 +70", color=color.red, linestyle=hline.style_dashed)
-hline(-rci_threshold, "下限 -70", color=color.green, linestyle=hline.style_dashed)
-hline(0, "ゼロライン", color=color.gray, linestyle=hline.style_dotted)
-
-// トリガーポイント
-bgcolor(long_trigger ? color.new(color.green, 80) : na, title="Long Trigger")
-bgcolor(short_trigger ? color.new(color.red, 80) : na, title="Short Trigger")
-
-// 矢印表示
-plotshape(long_trigger, "Hook Up", shape.triangleup, location.bottom, color.green, size=size.tiny)
-plotshape(short_trigger, "Hook Down", shape.triangledown, location.top, color.red, size=size.tiny)
+// === RCI状態表示（ラベル） ===
+var label rci_label = na
+label.delete(rci_label)
+rci_label := label.new(bar_index, high, "RCI: " + str.tostring(rci_value, "#.0"),
+     color=rci_value >= rci_threshold ? color.red : rci_value <= -rci_threshold ? color.green : color.gray,
+     textcolor=color.white, size=size.small, style=label.style_label_down)

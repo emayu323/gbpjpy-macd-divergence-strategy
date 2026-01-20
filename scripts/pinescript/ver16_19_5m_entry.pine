@@ -1,10 +1,11 @@
-//@version=5
+//@version=6
 indicator("Ver16-19 5M Entry Signal", overlay=true)
 
 // ==========================================
 // Ver16-19 5分足エントリー条件
 // - RCI(9) ±70到達後の反転
 // - パーフェクトオーダー (20>30>40 EMA)
+// - 4H 20MA乖離率フィルター
 // - ローソク足確定でシグナル
 // ==========================================
 
@@ -15,6 +16,12 @@ ema_short = input.int(20, "EMA短期")
 ema_mid = input.int(30, "EMA中期")
 ema_long = input.int(40, "EMA長期")
 
+// === 4H乖離率フィルター設定 ===
+grp_dev = "4H MA Deviation Filter"
+use_dev_filter = input.bool(true, "乖離率フィルター有効", group=grp_dev)
+dev_ma_length = input.int(20, "MA期間", minval=1, group=grp_dev)
+dev_threshold = input.float(0.4, "乖離率閾値 (%)", minval=0.1, step=0.1, group=grp_dev)
+
 // === RCI計算 ===
 rci(src, length) =>
     sum_d2 = 0.0
@@ -24,10 +31,8 @@ rci(src, length) =>
         count_equal = 0
         current_price = src[i]
         for j = 0 to length - 1
-            if src[j] < current_price
-                count_less += 1
-            else if src[j] == current_price
-                count_equal += 1
+            count_less := src[j] < current_price ? count_less + 1 : count_less
+            count_equal := src[j] == current_price ? count_equal + 1 : count_equal
         price_rank := 1 + count_less + (count_equal - 1) / 2.0
         time_rank = length - i
         d = price_rank - time_rank
@@ -45,20 +50,27 @@ ema20 = ta.ema(close, ema_short)
 ema30 = ta.ema(close, ema_mid)
 ema40 = ta.ema(close, ema_long)
 
+// === 4H 20MA乖離率計算 ===
+tf_4h = "240"
+sma_4h_20 = request.security(syminfo.tickerid, tf_4h, ta.sma(close, dev_ma_length))
+deviation_pct = (close - sma_4h_20) / sma_4h_20 * 100
+deviation_abs = math.abs(deviation_pct)
+deviation_ok = not use_dev_filter or deviation_abs <= dev_threshold
+
 // === パーフェクトオーダー判定 ===
 po_uptrend = ema20 > ema30 and ema30 > ema40
 po_downtrend = ema20 < ema30 and ema30 < ema40
 
 // === エントリー条件 ===
-// 買い: RCIが-70以下に到達後、反転上昇 + 上昇PO
+// 買い: RCIが-70以下に到達後、反転上昇 + 上昇PO + 乖離率OK
 rci_reached_oversold = rci_prev1 <= -rci_threshold or rci_prev2 <= -rci_threshold
 rci_hook_up = rci_value > rci_prev1
-long_signal = rci_reached_oversold and rci_hook_up and po_uptrend
+long_signal = rci_reached_oversold and rci_hook_up and po_uptrend and deviation_ok
 
-// 売り: RCIが+70以上に到達後、反転下落 + 下降PO
+// 売り: RCIが+70以上に到達後、反転下落 + 下降PO + 乖離率OK
 rci_reached_overbought = rci_prev1 >= rci_threshold or rci_prev2 >= rci_threshold
 rci_hook_down = rci_value < rci_prev1
-short_signal = rci_reached_overbought and rci_hook_down and po_downtrend
+short_signal = rci_reached_overbought and rci_hook_down and po_downtrend and deviation_ok
 
 // === 表示 ===
 // EMAライン
@@ -73,6 +85,21 @@ plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar, c
 // アラート
 alertcondition(long_signal, "5M Long Entry", "Ver16-19: 5M買いシグナル")
 alertcondition(short_signal, "5M Short Entry", "Ver16-19: 5M売りシグナル")
+
+// === 乖離率情報テーブル ===
+var table dev_table = table.new(position.bottom_right, 2, 3, bgcolor=color.new(color.black, 70))
+if barstate.islast
+    table.cell(dev_table, 0, 0, "4H 20MA", text_color=color.white, text_size=size.tiny)
+    table.cell(dev_table, 1, 0, str.tostring(sma_4h_20, "#.###"), text_color=color.white, text_size=size.tiny)
+    table.cell(dev_table, 0, 1, "乖離率:", text_color=color.white, text_size=size.tiny)
+    dev_col = deviation_ok ? color.lime : color.red
+    table.cell(dev_table, 1, 1, str.tostring(deviation_pct, "#.##") + "%", text_color=dev_col, text_size=size.tiny)
+    table.cell(dev_table, 0, 2, "状態:", text_color=color.white, text_size=size.tiny)
+    status_text = deviation_ok ? "OK" : "SKIP"
+    table.cell(dev_table, 1, 2, status_text, text_color=dev_col, text_size=size.tiny)
+
+// === 乖離率超過時の背景警告 ===
+bgcolor(use_dev_filter and not deviation_ok ? color.new(color.yellow, 85) : na, title="Deviation Warning")
 
 // === RCI表示用 (別ペイン) ===
 // 別のインジケーターとして追加するか、以下をコメント解除

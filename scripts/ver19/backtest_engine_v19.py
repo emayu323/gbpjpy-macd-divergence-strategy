@@ -47,12 +47,26 @@ class BacktestEngineV19:
         self.divergences: List[Dict] = []
         self.current_divergence: Optional[Dict] = None
         self.current_divergence_used = False
+        # 暫定ピボット追跡（見込みダイバー用）
         self.prev_prospective_low = np.nan
         self.prev_prospective_low_idx = np.nan
-        self.prev_macd_at_prospective_low = np.nan
         self.prev_prospective_high = np.nan
         self.prev_prospective_high_idx = np.nan
-        self.prev_macd_at_prospective_high = np.nan
+        # 確定ピボット追跡（確定ダイバー用 - PineScript準拠）
+        self.pivot_low_1 = np.nan
+        self.pivot_low_2 = np.nan
+        self.pivot_low_1_idx = np.nan
+        self.pivot_low_2_idx = np.nan
+        self.macd_at_low_1 = np.nan
+        self.macd_at_low_2 = np.nan
+        self.pivot_high_1 = np.nan
+        self.pivot_high_2 = np.nan
+        self.pivot_high_1_idx = np.nan
+        self.pivot_high_2_idx = np.nan
+        self.macd_at_high_1 = np.nan
+        self.macd_at_high_2 = np.nan
+        # ZigZag方向追跡
+        self.prev_zz_dir = 0
         self._calculate_indicators()
 
     def _calculate_indicators(self):
@@ -75,7 +89,7 @@ class BacktestEngineV19:
         self.df_1h['MACD_Hist'] = histogram
 
         (zz_highs_1h, zz_lows_1h, prospective_high, prospective_low,
-         prospective_high_idx, prospective_low_idx) = calculate_zigzag_with_prospective(
+         prospective_high_idx, prospective_low_idx, zz_direction) = calculate_zigzag_with_prospective(
             self.df_1h, depth=config.ZIGZAG_1H_DEPTH,
             deviation=config.ZIGZAG_1H_DEVIATION, backstep=config.ZIGZAG_1H_BACKSTEP)
         self.df_1h['ZZ_High'] = zz_highs_1h
@@ -84,6 +98,7 @@ class BacktestEngineV19:
         self.df_1h['Prospective_Low'] = prospective_low
         self.df_1h['Prospective_High_Idx'] = prospective_high_idx
         self.df_1h['Prospective_Low_Idx'] = prospective_low_idx
+        self.df_1h['ZZ_Direction'] = zz_direction
 
         self.df_1h['EMA_20'] = calculate_ema(self.df_1h, config.EMA_1H_SHORT)
         self.df_1h['EMA_30'] = calculate_ema(self.df_1h, config.EMA_1H_MID)
@@ -115,64 +130,158 @@ class BacktestEngineV19:
         return check_1h_rci_condition(rci_value, direction, config.RCI_1H_THRESHOLD)
 
     def _update_divergences(self, current_time: pd.Timestamp):
+        """
+        PineScript準拠のダイバージェンス検出ロジック
+
+        1. 確定ダイバージェンス: ZigZag方向が変わった時に、直近2つの確定ピボットを比較
+        2. 見込みダイバージェンス: 現在の暫定ピボット vs 直近の確定ピボットを比較
+        """
         mask_1h = self.df_1h.index <= current_time
         if mask_1h.sum() == 0:
             return
         idx_1h = mask_1h.sum() - 1
 
+        # 現在の1Hデータ取得
+        current_zz_dir = self.df_1h['ZZ_Direction'].iloc[idx_1h]
         current_prospective_low = self.df_1h['Prospective_Low'].iloc[idx_1h]
         current_prospective_low_idx = self.df_1h['Prospective_Low_Idx'].iloc[idx_1h]
         current_prospective_high = self.df_1h['Prospective_High'].iloc[idx_1h]
         current_prospective_high_idx = self.df_1h['Prospective_High_Idx'].iloc[idx_1h]
 
-        current_macd_at_low = np.nan
-        if not pd.isna(current_prospective_low_idx):
-            current_macd_at_low = self.df_1h['MACD'].iloc[int(current_prospective_low_idx)]
+        # ZigZag方向変化の検出（確定ダイバージェンス用）
+        dir_changed = current_zz_dir != self.prev_zz_dir and self.prev_zz_dir != 0
 
-        current_macd_at_high = np.nan
-        if not pd.isna(current_prospective_high_idx):
-            current_macd_at_high = self.df_1h['MACD'].iloc[int(current_prospective_high_idx)]
+        if dir_changed:
+            # === 確定ダイバージェンス検出 ===
+            if current_zz_dir > 0:
+                # 上昇方向に変化 = 安値が確定 → ブル（ロング）ダイバーをチェック
+                # シフト前に現在のpivot_1をpivot_2に保存
+                confirmed_low = self.pivot_low_1
+                confirmed_low_idx = self.pivot_low_1_idx
+                macd_at_confirmed = self.macd_at_low_1
 
+                # ピボットをシフト
+                self.pivot_low_2 = self.pivot_low_1
+                self.pivot_low_2_idx = self.pivot_low_1_idx
+                self.macd_at_low_2 = self.macd_at_low_1
+
+                # 新しい確定安値を記録（直前の暫定安値が確定）
+                if not pd.isna(self.prev_prospective_low):
+                    self.pivot_low_1 = self.prev_prospective_low
+                    self.pivot_low_1_idx = self.prev_prospective_low_idx
+                    if not pd.isna(self.prev_prospective_low_idx):
+                        self.macd_at_low_1 = self.df_1h['MACD'].iloc[int(self.prev_prospective_low_idx)]
+
+                # 確定ダイバージェンス判定（pivot_1 vs pivot_2）
+                if (not pd.isna(confirmed_low) and not pd.isna(self.pivot_low_2) and
+                    not pd.isna(macd_at_confirmed) and not pd.isna(self.macd_at_low_2)):
+                    # ヒドゥン: 価格↑, MACD↓
+                    if (config.USE_HIDDEN_DIVERGENCE and
+                        confirmed_low > self.pivot_low_2 and
+                        macd_at_confirmed < self.macd_at_low_2):
+                        self._set_divergence(current_time, 'hidden', 'long', confirmed_low, macd_at_confirmed, 'confirmed')
+                    # レギュラー: 価格↓, MACD↑
+                    elif (config.USE_REGULAR_DIVERGENCE and
+                          confirmed_low < self.pivot_low_2 and
+                          macd_at_confirmed > self.macd_at_low_2):
+                        self._set_divergence(current_time, 'regular', 'long', confirmed_low, macd_at_confirmed, 'confirmed')
+
+            else:
+                # 下降方向に変化 = 高値が確定 → ベア（ショート）ダイバーをチェック
+                confirmed_high = self.pivot_high_1
+                confirmed_high_idx = self.pivot_high_1_idx
+                macd_at_confirmed = self.macd_at_high_1
+
+                # ピボットをシフト
+                self.pivot_high_2 = self.pivot_high_1
+                self.pivot_high_2_idx = self.pivot_high_1_idx
+                self.macd_at_high_2 = self.macd_at_high_1
+
+                # 新しい確定高値を記録
+                if not pd.isna(self.prev_prospective_high):
+                    self.pivot_high_1 = self.prev_prospective_high
+                    self.pivot_high_1_idx = self.prev_prospective_high_idx
+                    if not pd.isna(self.prev_prospective_high_idx):
+                        self.macd_at_high_1 = self.df_1h['MACD'].iloc[int(self.prev_prospective_high_idx)]
+
+                # 確定ダイバージェンス判定
+                if (not pd.isna(confirmed_high) and not pd.isna(self.pivot_high_2) and
+                    not pd.isna(macd_at_confirmed) and not pd.isna(self.macd_at_high_2)):
+                    # ヒドゥン: 価格↓, MACD↑
+                    if (config.USE_HIDDEN_DIVERGENCE and
+                        confirmed_high < self.pivot_high_2 and
+                        macd_at_confirmed > self.macd_at_high_2):
+                        self._set_divergence(current_time, 'hidden', 'short', confirmed_high, macd_at_confirmed, 'confirmed')
+                    # レギュラー: 価格↑, MACD↓
+                    elif (config.USE_REGULAR_DIVERGENCE and
+                          confirmed_high > self.pivot_high_2 and
+                          macd_at_confirmed < self.macd_at_high_2):
+                        self._set_divergence(current_time, 'regular', 'short', confirmed_high, macd_at_confirmed, 'confirmed')
+
+        # === 見込み（Prospective）ダイバージェンス検出 ===
+        # 現在の暫定ピボット vs 直近の確定ピボットを比較
+
+        # 暫定安値の更新チェック & 見込みブルダイバー
         if (not pd.isna(current_prospective_low) and not pd.isna(current_prospective_low_idx) and
             current_prospective_low_idx != self.prev_prospective_low_idx):
-            if not pd.isna(self.prev_prospective_low) and not pd.isna(self.prev_macd_at_prospective_low):
+
+            current_macd_at_low = self.df_1h['MACD'].iloc[int(current_prospective_low_idx)]
+
+            # 見込みダイバージェンス: 暫定安値 vs 確定安値(pivot_low_1)
+            if not pd.isna(self.pivot_low_1) and not pd.isna(self.macd_at_low_1):
+                # ヒドゥン: 価格↑, MACD↓
                 if (config.USE_HIDDEN_DIVERGENCE and
-                    current_prospective_low > self.prev_prospective_low and
-                    current_macd_at_low < self.prev_macd_at_prospective_low):
-                    self._set_divergence(current_time, 'hidden', 'long', current_prospective_low, current_macd_at_low)
+                    current_prospective_low > self.pivot_low_1 and
+                    current_macd_at_low < self.macd_at_low_1):
+                    self._set_divergence(current_time, 'hidden', 'long', current_prospective_low, current_macd_at_low, 'prospective')
+                # レギュラー: 価格↓, MACD↑
                 elif (config.USE_REGULAR_DIVERGENCE and
-                      current_prospective_low < self.prev_prospective_low and
-                      current_macd_at_low > self.prev_macd_at_prospective_low):
-                    self._set_divergence(current_time, 'regular', 'long', current_prospective_low, current_macd_at_low)
+                      current_prospective_low < self.pivot_low_1 and
+                      current_macd_at_low > self.macd_at_low_1):
+                    self._set_divergence(current_time, 'regular', 'long', current_prospective_low, current_macd_at_low, 'prospective')
+
+            # 暫定安値を更新
             self.prev_prospective_low = current_prospective_low
             self.prev_prospective_low_idx = current_prospective_low_idx
-            self.prev_macd_at_prospective_low = current_macd_at_low
 
+        # 暫定高値の更新チェック & 見込みベアダイバー
         if (not pd.isna(current_prospective_high) and not pd.isna(current_prospective_high_idx) and
             current_prospective_high_idx != self.prev_prospective_high_idx):
-            if not pd.isna(self.prev_prospective_high) and not pd.isna(self.prev_macd_at_prospective_high):
+
+            current_macd_at_high = self.df_1h['MACD'].iloc[int(current_prospective_high_idx)]
+
+            # 見込みダイバージェンス: 暫定高値 vs 確定高値(pivot_high_1)
+            if not pd.isna(self.pivot_high_1) and not pd.isna(self.macd_at_high_1):
+                # ヒドゥン: 価格↓, MACD↑
                 if (config.USE_HIDDEN_DIVERGENCE and
-                    current_prospective_high < self.prev_prospective_high and
-                    current_macd_at_high > self.prev_macd_at_prospective_high):
-                    self._set_divergence(current_time, 'hidden', 'short', current_prospective_high, current_macd_at_high)
+                    current_prospective_high < self.pivot_high_1 and
+                    current_macd_at_high > self.macd_at_high_1):
+                    self._set_divergence(current_time, 'hidden', 'short', current_prospective_high, current_macd_at_high, 'prospective')
+                # レギュラー: 価格↑, MACD↓
                 elif (config.USE_REGULAR_DIVERGENCE and
-                      current_prospective_high > self.prev_prospective_high and
-                      current_macd_at_high < self.prev_macd_at_prospective_high):
-                    self._set_divergence(current_time, 'regular', 'short', current_prospective_high, current_macd_at_high)
+                      current_prospective_high > self.pivot_high_1 and
+                      current_macd_at_high < self.macd_at_high_1):
+                    self._set_divergence(current_time, 'regular', 'short', current_prospective_high, current_macd_at_high, 'prospective')
+
+            # 暫定高値を更新
             self.prev_prospective_high = current_prospective_high
             self.prev_prospective_high_idx = current_prospective_high_idx
-            self.prev_macd_at_prospective_high = current_macd_at_high
 
+        # ZigZag方向を更新
+        self.prev_zz_dir = current_zz_dir
+
+        # ダイバージェンスの有効期限チェック
         if self.current_divergence is not None:
             valid_time_threshold = current_time - timedelta(hours=config.DIVERGENCE_VALID_HOURS)
             if self.current_divergence['detected_time'] < valid_time_threshold:
                 self.current_divergence = None
                 self.current_divergence_used = False
 
-    def _set_divergence(self, current_time, div_type, direction, price, macd_value):
+    def _set_divergence(self, current_time, div_type, direction, price, macd_value, pivot_type='prospective'):
+        """ダイバージェンスを記録"""
         divergence = {
             'type': div_type, 'direction': direction, 'detected_time': current_time,
-            'price': price, 'macd': macd_value, 'pivot_type': 'prospective'
+            'price': price, 'macd': macd_value, 'pivot_type': pivot_type
         }
         self.current_divergence = divergence
         self.current_divergence_used = False
