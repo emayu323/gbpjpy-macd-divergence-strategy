@@ -1,0 +1,634 @@
+//@version=6
+indicator("sukepoyo environment", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ==========================================
+// sukepoyo environment - 1時間足環境認識インジケーター
+// - MACDダイバージェンス（Hidden/Regular）
+// - パーフェクトオーダー（20/30/40 EMA）
+// - ZigZag (sukepoyo_sub.pine準拠)
+// - 見込みダイバー（点線）
+// - RCI 3段階ステージ背景色
+// ==========================================
+
+// === ZigZag設定 ===
+grp_zz = "ZigZag (1H)"
+zz_show = input.bool(true, "Show ZigZag", group=grp_zz)
+zz_depth = input.int(12, "Depth", minval=1, group=grp_zz)
+zz_deviation = input.int(5, "Deviation (Points)", minval=1, group=grp_zz)
+zz_backstep = input.int(3, "Backstep", minval=1, group=grp_zz)
+zz_color = input.color(color.white, "Line Color", group=grp_zz)
+zz_width = input.int(2, "Line Width", minval=1, group=grp_zz)
+
+// === MACD設定 ===
+grp_macd = "MACD"
+macd_fast = input.int(6, "Fast", group=grp_macd)
+macd_slow = input.int(13, "Slow", group=grp_macd)
+macd_signal_len = input.int(4, "Signal", group=grp_macd)
+
+// === EMA設定 ===
+grp_ema = "EMA (Perfect Order)"
+show_ema = input.bool(true, "Show EMA", group=grp_ema)
+ema1_len = input.int(20, "EMA 20", group=grp_ema)
+ema2_len = input.int(30, "EMA 30", group=grp_ema)
+ema3_len = input.int(40, "EMA 40", group=grp_ema)
+show_ema_fill = input.bool(true, "PO時EMA間を着色", group=grp_ema)
+ema_fill_alpha = input.int(85, "着色透明度", minval=0, maxval=100, group=grp_ema)
+
+// === RCI背景色設定 ===
+grp_rci = "RCI Stage Background"
+show_rci_bg = input.bool(true, "RCI背景色を表示", group=grp_rci)
+rci_short_len = input.int(9, "RCI 短期", minval=1, group=grp_rci)
+rci_mid_len = input.int(14, "RCI 中期", minval=1, group=grp_rci)
+rci_long_len = input.int(18, "RCI 長期", minval=1, group=grp_rci)
+rci_trigger = input.int(60, "RCI トリガー", minval=0, maxval=100, group=grp_rci)
+
+// === RCI背景色フィルター設定 ===
+grp_rci_filter = "RCI BG Filter (EMA)"
+use_rci_filter = input.bool(false, "EMAフィルター有効", group=grp_rci_filter)
+rci_filter_ema_len = input.int(100, "フィルターEMA期間", minval=1, group=grp_rci_filter)
+show_filter_ema = input.bool(true, "フィルターEMAを表示", group=grp_rci_filter)
+filter_ema_color = input.color(color.purple, "フィルターEMA色", group=grp_rci_filter)
+use_ema_break_filter = input.bool(false, "EMA抜け無効化", group=grp_rci_filter, tooltip="EMAを抜けたら戻っても背景色を表示しない")
+
+// === RCI短期フックフィルター設定 ===
+grp_hook = "RCI Hook Filter"
+use_hook_filter = input.bool(false, "フックフィルター有効", group=grp_hook, tooltip="RCI短期が反転するまで背景色を表示しない")
+
+// === POフィルター設定 ===
+grp_po_filter = "RCI BG Filter (PO)"
+use_po_filter = input.bool(false, "POフィルター有効", group=grp_po_filter, tooltip="POの方向に合ったRCI背景色のみ表示")
+
+// === ダウフィルター設定 ===
+grp_dow = "RCI BG Filter (Dow)"
+use_dow_filter = input.bool(false, "ダウフィルター有効", group=grp_dow, tooltip="ZigZagでトレンド方向が確定するまで背景色を表示しない")
+show_dow_lines = input.bool(false, "ダウ基準線を表示", group=grp_dow, tooltip="base_highとbase_lowの水平線を表示")
+dow_high_color = input.color(color.lime, "基準高値の色", group=grp_dow)
+dow_low_color = input.color(color.red, "基準安値の色", group=grp_dow)
+
+// === ダイバージェンス設定 ===
+grp_div = "Divergence"
+show_div = input.bool(true, "Show Divergence", group=grp_div)
+show_prospective_div = input.bool(true, "Show Prospective Div (Dashed)", group=grp_div)
+use_hidden = input.bool(true, "Hidden Divergence", group=grp_div)
+use_regular = input.bool(true, "Regular Divergence", group=grp_div)
+hidden_bull_color = input.color(color.lime, "Hidden Bullish Color", group=grp_div)
+hidden_bear_color = input.color(color.fuchsia, "Hidden Bearish Color", group=grp_div)
+regular_bull_color = input.color(color.aqua, "Regular Bullish Color", group=grp_div)
+regular_bear_color = input.color(color.orange, "Regular Bearish Color", group=grp_div)
+div_line_width = input.int(2, "Divergence Line Width", minval=1, maxval=5, group=grp_div)
+
+// === 1時間足データ取得 ===
+tf_1h = "60"
+
+// 1H EMA
+e1 = request.security(syminfo.tickerid, tf_1h, ta.ema(close, ema1_len))
+e2 = request.security(syminfo.tickerid, tf_1h, ta.ema(close, ema2_len))
+e3 = request.security(syminfo.tickerid, tf_1h, ta.ema(close, ema3_len))
+
+// 1H MACD
+[macd_line, signal_line, macd_hist] = request.security(syminfo.tickerid, tf_1h, ta.macd(close, macd_fast, macd_slow, macd_signal_len))
+
+// 1H フィルターEMA
+filter_ema = request.security(syminfo.tickerid, tf_1h, ta.ema(close, rci_filter_ema_len))
+
+// フィルター判定: 価格がEMAより上=ロングOK、下=ショートOK
+bool filter_long_ok = not use_rci_filter or close > filter_ema
+bool filter_short_ok = not use_rci_filter or close < filter_ema
+
+// === RCI計算関数 ===
+rci(int len) =>
+    float sumD2 = 0.0
+    for i = 0 to len - 1
+        float currentPrice = close[i]
+        float timeRank = i + 1.0
+        int countGreater = 0
+        int countEqual = 0
+        for j = 0 to len - 1
+            float p = close[j]
+            if p > currentPrice
+                countGreater += 1
+            else if p == currentPrice
+                countEqual += 1
+        float priceRank = (countGreater + 1) + (countEqual - 1) / 2.0
+        float d = timeRank - priceRank
+        sumD2 += d * d
+    float rciValue = (1.0 - (6.0 * sumD2) / (len * (len * len - 1.0))) * 100.0
+    rciValue
+
+// 1H RCI取得
+rci_short = request.security(syminfo.tickerid, tf_1h, rci(rci_short_len))
+rci_mid = request.security(syminfo.tickerid, tf_1h, rci(rci_mid_len))
+rci_long = request.security(syminfo.tickerid, tf_1h, rci(rci_long_len))
+
+// RCI短期の方向判定（フックフィルター用）
+bool rci_short_up = rci_short > rci_short[1]    // 上向き（買いフック）
+bool rci_short_down = rci_short < rci_short[1]  // 下向き（売りフック）
+
+// === RCIステージ判定ロジック ===
+// 短期RCI armed状態（保持型）
+var bool s_bull_armed = false
+var bool s_bear_armed = false
+
+if rci_short <= -rci_trigger
+    s_bull_armed := true
+if rci_short > 0
+    s_bull_armed := false
+
+if rci_short >= rci_trigger
+    s_bear_armed := true
+if rci_short < 0
+    s_bear_armed := false
+
+// 中期・長期のリアルタイム判定
+bool m_bull_now = rci_mid <= -rci_trigger
+bool l_bull_now = rci_long <= -rci_trigger
+bool m_bear_now = rci_mid >= rci_trigger
+bool l_bear_now = rci_long >= rci_trigger
+
+// ステージ判定（保持型）
+var bool bull_st3_active = false
+var bool bull_st2_active = false
+var bool bear_st3_active = false
+var bool bear_st2_active = false
+
+// Bull (買い)
+if rci_short > 0
+    bull_st3_active := false
+    bull_st2_active := false
+
+if s_bull_armed
+    if m_bull_now and l_bull_now
+        bull_st3_active := true
+        bull_st2_active := false
+    else if m_bull_now and not bull_st3_active
+        bull_st2_active := true
+
+// Bear (売り)
+if rci_short < 0
+    bear_st3_active := false
+    bear_st2_active := false
+
+if s_bear_armed
+    if m_bear_now and l_bear_now
+        bear_st3_active := true
+        bear_st2_active := false
+    else if m_bear_now and not bear_st3_active
+        bear_st2_active := true
+
+// 第1段階 (リアルタイム)
+bool bull_st1_now = rci_short <= -rci_trigger
+bool bear_st1_now = rci_short >= rci_trigger
+
+// 背景色出力フラグ
+bg_bull_3 = bull_st3_active
+bg_bull_2 = bull_st2_active
+bg_bull_1 = bull_st1_now and not bull_st2_active and not bull_st3_active
+
+bg_bear_3 = bear_st3_active
+bg_bear_2 = bear_st2_active
+bg_bear_1 = bear_st1_now and not bear_st2_active and not bear_st3_active
+
+// === EMA抜け追跡（保持型） ===
+// 買いステージ中にEMAより下に抜けたかを追跡
+var bool bull_ema_broken = false
+// 売りステージ中にEMAより上に抜けたかを追跡
+var bool bear_ema_broken = false
+
+// 買いステージがリセットされたらフラグもリセット
+if not bg_bull_1 and not bg_bull_2 and not bg_bull_3
+    bull_ema_broken := false
+// 買いステージ中にEMAより下に抜けたらフラグを立てる
+if (bg_bull_1 or bg_bull_2 or bg_bull_3) and close < filter_ema
+    bull_ema_broken := true
+
+// 売りステージがリセットされたらフラグもリセット
+if not bg_bear_1 and not bg_bear_2 and not bg_bear_3
+    bear_ema_broken := false
+// 売りステージ中にEMAより上に抜けたらフラグを立てる
+if (bg_bear_1 or bg_bear_2 or bg_bear_3) and close > filter_ema
+    bear_ema_broken := true
+
+// EMA抜けフィルター判定
+bool ema_break_bull_ok = not use_ema_break_filter or not bull_ema_broken
+bool ema_break_bear_ok = not use_ema_break_filter or not bear_ema_broken
+
+// RCIステージ背景色（赤=買い、青=売り）
+color c_bull_st3 = color.new(color.rgb(255, 50, 50), 40)
+color c_bull_st2 = color.new(color.rgb(255, 50, 50), 60)
+color c_bull_st1 = color.new(color.rgb(255, 50, 50), 90)
+color c_bear_st3 = color.new(color.rgb(0, 180, 255), 40)
+color c_bear_st2 = color.new(color.rgb(0, 180, 255), 60)
+color c_bear_st1 = color.new(color.rgb(0, 180, 255), 90)
+
+// === ZigZag計算 (sukepoyo_sub.pine完全準拠) ===
+float dev_th = zz_deviation * syminfo.mintick
+int hb = ta.highestbars(zz_depth)
+int lb = ta.lowestbars(zz_depth)
+hr = ta.barssince(not (high[-hb] - high > dev_th)[1])
+lr = ta.barssince(not (low - low[-lb] > dev_th)[1])
+zz_dir = ta.barssince(not (hr > lr)) >= zz_backstep ? -1 : 1
+
+// ZigZagポイント追跡 (sukepoyo_sub.pine準拠)
+var chart.point z_A = chart.point.now(low)
+var chart.point z1_A = chart.point.now(low)
+var chart.point z2_A = chart.point.now(high)
+
+// z2_AのMACD値を追跡（ダイバージェンス用）
+var float macd_at_z2 = na
+
+// === ダイバージェンス用ピボット追跡 ===
+// 高値ピボット（下降に転換時に確定）
+var chart.point pivot_high_1 = na
+var chart.point pivot_high_2 = na
+var float macd_at_high_1 = na
+var float macd_at_high_2 = na
+
+// 安値ピボット（上昇に転換時に確定）
+var chart.point pivot_low_1 = na
+var chart.point pivot_low_2 = na
+var float macd_at_low_1 = na
+var float macd_at_low_2 = na
+
+// 方向転換検出
+bool dir_changed = zz_dir != zz_dir[1]
+
+// 方向転換時の処理
+if dir_changed
+    if zz_dir > 0
+        // 上昇方向に転換 → 安値確定（シフト前のz2_Aが安値）
+        pivot_low_2 := pivot_low_1
+        macd_at_low_2 := macd_at_low_1
+        pivot_low_1 := z2_A.copy()
+        macd_at_low_1 := macd_at_z2
+    else
+        // 下降方向に転換 → 高値確定（シフト前のz2_Aが高値）
+        pivot_high_2 := pivot_high_1
+        macd_at_high_2 := macd_at_high_1
+        pivot_high_1 := z2_A.copy()
+        macd_at_high_1 := macd_at_z2
+
+    // ZigZagポイントシフト（ピボット保存後に行う）
+    z1_A := z2_A.copy()
+    z2_A := z_A.copy()
+    macd_at_z2 := macd_line
+
+// ピボット更新（sukepoyo_sub.pine準拠）
+if zz_dir > 0
+    if high > z2_A.price
+        z2_A := chart.point.now(high)
+        z_A := chart.point.now(low)
+        macd_at_z2 := macd_line
+    if low < z_A.price
+        z_A := chart.point.now(low)
+else if zz_dir < 0
+    if low < z2_A.price
+        z2_A := chart.point.now(low)
+        z_A := chart.point.now(high)
+        macd_at_z2 := macd_line
+    if high > z_A.price
+        z_A := chart.point.now(high)
+
+// === パーフェクトオーダー判定 ===
+bool po_up = e1 > e2 and e2 > e3
+bool po_down = e1 < e2 and e2 < e3
+
+// === ダウトレンド判定（基準高値/安値方式） ===
+// 基準高値/安値を保持（トレンド成立時に設定、レンジを抜けるまで維持）
+var float base_high = na       // 基準高値（これを超えたら上昇トレンド）
+var float base_low = na        // 基準安値（これを下回ったら下降トレンド）
+var int dow_state = 0          // 0=初期/不明, 1=上昇, -1=下降, 2=レンジ
+var bool hide_high_line = false // 高値ライン非表示フラグ（次の高値確定まで）
+var bool hide_low_line = false  // 安値ライン非表示フラグ（次の安値確定まで）
+
+// 直近の確定高値/安値
+float latest_high = not na(pivot_high_1) ? pivot_high_1.price : na
+float latest_low = not na(pivot_low_1) ? pivot_low_1.price : na
+float prev_high = not na(pivot_high_2) ? pivot_high_2.price : na
+float prev_low = not na(pivot_low_2) ? pivot_low_2.price : na
+
+// 高値/安値の比較（確定ピボット間）
+bool higher_high = not na(latest_high) and not na(prev_high) and latest_high > prev_high
+bool lower_high = not na(latest_high) and not na(prev_high) and latest_high < prev_high
+bool higher_low = not na(latest_low) and not na(prev_low) and latest_low > prev_low
+bool lower_low = not na(latest_low) and not na(prev_low) and latest_low < prev_low
+
+// === 状態遷移ロジック ===
+// 高値が確定した時（下降方向に転換 = zz_dir < 0 になった瞬間）
+bool high_confirmed = dir_changed and zz_dir < 0
+
+// 安値が確定した時（上昇方向に転換 = zz_dir > 0 になった瞬間）
+bool low_confirmed = dir_changed and zz_dir > 0
+
+// 初期状態の処理（最初のトレンド判定）
+if dow_state == 0
+    if higher_high and higher_low
+        // HH + HL → 上昇トレンド成立
+        dow_state := 1
+        base_high := latest_high  // この高値が基準
+        base_low := latest_low    // この安値が基準
+    else if lower_high and lower_low
+        // LH + LL → 下降トレンド成立
+        dow_state := -1
+        base_high := latest_high
+        base_low := latest_low
+
+// 暫定ピボットの価格
+float tentative_high = zz_dir > 0 and not na(z2_A) ? z2_A.price : na  // 上昇中の暫定高値
+float tentative_low = zz_dir < 0 and not na(z2_A) ? z2_A.price : na   // 下降中の暫定安値
+
+// 上昇トレンド中の処理
+if dow_state == 1
+    // 暫定高値がbase_highを超えている間、高値ラインは非表示で暫定的に追従
+    if not na(tentative_high) and tentative_high > base_high
+        // 暫定高値が基準高値を超えた → 安値を直前の確定安値に移動、高値は暫定追従
+        base_low := latest_low
+        base_high := tentative_high  // 暫定高値に追従（確定前）
+        hide_high_line := true  // 高値ラインは確定まで非表示
+
+    if high_confirmed
+        // 高値確定時
+        if latest_high >= base_high
+            // 基準高値を確定値で更新 → 上昇トレンド継続
+            base_high := latest_high
+            // 高値ラインを再表示（確定したので）
+            hide_high_line := false
+        else
+            // 基準高値を更新できない → レンジへ（base_high, base_lowは維持）
+            dow_state := 2
+            hide_high_line := false
+
+    if low_confirmed
+        if latest_low < base_low
+            // 基準安値を下抜け → 下降トレンドへ
+            dow_state := -1
+            base_high := latest_high
+            base_low := latest_low
+            hide_high_line := false
+            hide_low_line := true  // 安値更新したので安値ラインは次まで非表示
+        // 高値を超えられずに安値が形成されてもbase_lowは更新しない
+
+// 下降トレンド中の処理
+if dow_state == -1
+    // 暫定安値がbase_lowを下回っている間、安値ラインは非表示で暫定的に追従
+    if not na(tentative_low) and tentative_low < base_low
+        // 暫定安値が基準安値を下回った → 高値を直前の確定高値に移動、安値は暫定追従
+        base_high := latest_high
+        base_low := tentative_low  // 暫定安値に追従（確定前）
+        hide_low_line := true  // 安値ラインは確定まで非表示
+
+    if low_confirmed
+        // 安値確定時
+        if latest_low <= base_low
+            // 基準安値を確定値で更新 → 下降トレンド継続
+            base_low := latest_low
+            // 安値ラインを再表示（確定したので）
+            hide_low_line := false
+        else
+            // 基準安値を更新できない → レンジへ（base_high, base_lowは維持）
+            dow_state := 2
+            hide_low_line := false
+
+    if high_confirmed
+        if latest_high > base_high
+            // 基準高値を上抜け → 上昇トレンドへ
+            dow_state := 1
+            base_high := latest_high
+            base_low := latest_low
+            hide_low_line := false
+            hide_high_line := true  // 高値更新したので高値ラインは次まで非表示
+        // 安値を超えられずに高値が形成されてもbase_highは更新しない
+
+// レンジ中の処理
+if dow_state == 2
+    if high_confirmed and latest_high > base_high
+        // 基準高値を上抜け → 上昇トレンドへ
+        dow_state := 1
+        base_high := latest_high
+        base_low := latest_low
+        hide_high_line := true  // 高値更新したので高値ラインは次まで非表示
+        hide_low_line := false
+    if low_confirmed and latest_low < base_low
+        // 基準安値を下抜け → 下降トレンドへ
+        dow_state := -1
+        base_high := latest_high
+        base_low := latest_low
+        hide_low_line := true   // 安値更新したので安値ラインは次まで非表示
+        hide_high_line := false
+
+// 最終トレンド判定
+bool dow_uptrend = dow_state == 1
+bool dow_downtrend = dow_state == -1
+bool in_range = dow_state == 2
+
+// === ダウ基準線の描画 ===
+var line line_base_high = na
+var line line_base_low = na
+
+// 前の線を削除して新しい線を作成（毎バー更新）
+if show_dow_lines
+    line.delete(line_base_high[1])
+    line.delete(line_base_low[1])
+
+    // 高値ライン: hide_high_lineがtrueの場合は非表示
+    if not na(base_high) and not hide_high_line
+        line_base_high := line.new(bar_index - 50, base_high, bar_index + 10, base_high,
+             color=dow_high_color, style=line.style_dashed, width=1)
+    // 安値ライン: hide_low_lineがtrueの場合は非表示
+    if not na(base_low) and not hide_low_line
+        line_base_low := line.new(bar_index - 50, base_low, bar_index + 10, base_low,
+             color=dow_low_color, style=line.style_dashed, width=1)
+
+// === 確定ダイバージェンス判定（方向転換時） ===
+// Hidden Bullish: 安値切り上げ + MACD切り下げ
+bool hb_valid = dir_changed and zz_dir > 0 and not na(pivot_low_1) and not na(pivot_low_2)
+bool hb_price = hb_valid and pivot_low_1.price > pivot_low_2.price
+bool hb_macd = hb_valid and not na(macd_at_low_1) and not na(macd_at_low_2) and macd_at_low_1 < macd_at_low_2
+bool hidden_bull = use_hidden and hb_price and hb_macd
+
+// Regular Bullish: 安値切り下げ + MACD切り上げ
+bool rb_price = hb_valid and pivot_low_1.price < pivot_low_2.price
+bool rb_macd = hb_valid and not na(macd_at_low_1) and not na(macd_at_low_2) and macd_at_low_1 > macd_at_low_2
+bool regular_bull = use_regular and rb_price and rb_macd
+
+// Hidden Bearish: 高値切り下げ + MACD切り上げ
+bool hbe_valid = dir_changed and zz_dir < 0 and not na(pivot_high_1) and not na(pivot_high_2)
+bool hbe_price = hbe_valid and pivot_high_1.price < pivot_high_2.price
+bool hbe_macd = hbe_valid and not na(macd_at_high_1) and not na(macd_at_high_2) and macd_at_high_1 > macd_at_high_2
+bool hidden_bear = use_hidden and hbe_price and hbe_macd
+
+// Regular Bearish: 高値切り上げ + MACD切り下げ
+bool rbe_price = hbe_valid and pivot_high_1.price > pivot_high_2.price
+bool rbe_macd = hbe_valid and not na(macd_at_high_1) and not na(macd_at_high_2) and macd_at_high_1 < macd_at_high_2
+bool regular_bear = use_regular and rbe_price and rbe_macd
+
+// === 見込みダイバージェンス判定（暫定ピボット z2_A vs 確定ピボット） ===
+// 下降中: z2_A（暫定安値）vs pivot_low_1（確定安値）→ Bullish
+bool prosp_bull_valid = zz_dir < 0 and not na(pivot_low_1) and not na(z2_A) and not na(macd_at_z2) and not na(macd_at_low_1)
+bool prosp_hb_price = prosp_bull_valid and z2_A.price > pivot_low_1.price
+bool prosp_hb_macd = prosp_bull_valid and macd_at_z2 < macd_at_low_1
+bool prosp_hidden_bull = use_hidden and prosp_hb_price and prosp_hb_macd
+
+bool prosp_rb_price = prosp_bull_valid and z2_A.price < pivot_low_1.price
+bool prosp_rb_macd = prosp_bull_valid and macd_at_z2 > macd_at_low_1
+bool prosp_regular_bull = use_regular and prosp_rb_price and prosp_rb_macd
+
+// 上昇中: z2_A（暫定高値）vs pivot_high_1（確定高値）→ Bearish
+bool prosp_bear_valid = zz_dir > 0 and not na(pivot_high_1) and not na(z2_A) and not na(macd_at_z2) and not na(macd_at_high_1)
+bool prosp_hbe_price = prosp_bear_valid and z2_A.price < pivot_high_1.price
+bool prosp_hbe_macd = prosp_bear_valid and macd_at_z2 > macd_at_high_1
+bool prosp_hidden_bear = use_hidden and prosp_hbe_price and prosp_hbe_macd
+
+bool prosp_rbe_price = prosp_bear_valid and z2_A.price > pivot_high_1.price
+bool prosp_rbe_macd = prosp_bear_valid and macd_at_z2 < macd_at_high_1
+bool prosp_regular_bear = use_regular and prosp_rbe_price and prosp_rbe_macd
+
+// === 描画: ZigZag (sukepoyo_sub.pine準拠) ===
+var line zz_line = na
+if zz_dir == zz_dir[1]
+    line.delete(zz_line[1])
+if zz_show
+    zz_line := line.new(z1_A.time, z1_A.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, zz_color, line.style_solid, zz_width)
+
+// === 描画: 確定ダイバージェンスライン（実線） ===
+if show_div and hidden_bull and not na(pivot_low_1) and not na(pivot_low_2)
+    line.new(pivot_low_2.time, pivot_low_2.price, pivot_low_1.time, pivot_low_1.price, xloc.bar_time, extend.none, hidden_bull_color, line.style_solid, div_line_width)
+
+if show_div and regular_bull and not na(pivot_low_1) and not na(pivot_low_2)
+    line.new(pivot_low_2.time, pivot_low_2.price, pivot_low_1.time, pivot_low_1.price, xloc.bar_time, extend.none, regular_bull_color, line.style_solid, div_line_width)
+
+if show_div and hidden_bear and not na(pivot_high_1) and not na(pivot_high_2)
+    line.new(pivot_high_2.time, pivot_high_2.price, pivot_high_1.time, pivot_high_1.price, xloc.bar_time, extend.none, hidden_bear_color, line.style_solid, div_line_width)
+
+if show_div and regular_bear and not na(pivot_high_1) and not na(pivot_high_2)
+    line.new(pivot_high_2.time, pivot_high_2.price, pivot_high_1.time, pivot_high_1.price, xloc.bar_time, extend.none, regular_bear_color, line.style_solid, div_line_width)
+
+// === 描画: 見込みダイバージェンスライン（点線） ===
+var line prosp_line_bull = na
+var line prosp_line_bear = na
+
+// 前のラインを削除
+line.delete(prosp_line_bull[1])
+line.delete(prosp_line_bear[1])
+
+if show_prospective_div and not na(pivot_low_1) and not na(z2_A)
+    if prosp_hidden_bull
+        prosp_line_bull := line.new(pivot_low_1.time, pivot_low_1.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, hidden_bull_color, line.style_dashed, div_line_width)
+    else if prosp_regular_bull
+        prosp_line_bull := line.new(pivot_low_1.time, pivot_low_1.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, regular_bull_color, line.style_dashed, div_line_width)
+
+if show_prospective_div and not na(pivot_high_1) and not na(z2_A)
+    if prosp_hidden_bear
+        prosp_line_bear := line.new(pivot_high_1.time, pivot_high_1.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, hidden_bear_color, line.style_dashed, div_line_width)
+    else if prosp_regular_bear
+        prosp_line_bear := line.new(pivot_high_1.time, pivot_high_1.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, regular_bear_color, line.style_dashed, div_line_width)
+
+// === 描画: 確定ダイバージェンスシグナル ===
+if show_div and hidden_bull and not na(pivot_low_1)
+    label.new(pivot_low_1.time, pivot_low_1.price, "HD↑", xloc.bar_time, yloc.price, hidden_bull_color, label.style_label_up, color.black, size.small)
+
+if show_div and hidden_bear and not na(pivot_high_1)
+    label.new(pivot_high_1.time, pivot_high_1.price, "HD↓", xloc.bar_time, yloc.price, hidden_bear_color, label.style_label_down, color.white, size.small)
+
+if show_div and regular_bull and not na(pivot_low_1)
+    label.new(pivot_low_1.time, pivot_low_1.price, "RD↑", xloc.bar_time, yloc.price, regular_bull_color, label.style_label_up, color.black, size.small)
+
+if show_div and regular_bear and not na(pivot_high_1)
+    label.new(pivot_high_1.time, pivot_high_1.price, "RD↓", xloc.bar_time, yloc.price, regular_bear_color, label.style_label_down, color.black, size.small)
+
+// === 描画: EMA ===
+p_ema1 = plot(show_ema ? e1 : na, "1H EMA20", color.red, 2)
+p_ema2 = plot(show_ema ? e2 : na, "1H EMA30", color.blue, 2)
+p_ema3 = plot(show_ema ? e3 : na, "1H EMA40", color.yellow, 2)
+
+// === 描画: フィルターEMA ===
+plot(show_filter_ema ? filter_ema : na, "Filter EMA", filter_ema_color, 2, plot.style_line)
+
+// === 描画: EMA間着色（PO時のみ） ===
+fill_color_up = color.new(color.lime, ema_fill_alpha)
+fill_color_down = color.new(color.red, ema_fill_alpha)
+fill_12_color = show_ema_fill and po_up ? fill_color_up : show_ema_fill and po_down ? fill_color_down : na
+fill_23_color = show_ema_fill and po_up ? fill_color_up : show_ema_fill and po_down ? fill_color_down : na
+fill(p_ema1, p_ema2, fill_12_color, "EMA 20-30 Fill")
+fill(p_ema2, p_ema3, fill_23_color, "EMA 30-40 Fill")
+
+// === 描画: RCIステージ背景色（全フィルター適用） ===
+// フックフィルター: 買い=RCI短期上向き、売り=RCI短期下向き
+bool hook_bull_ok = not use_hook_filter or rci_short_up
+bool hook_bear_ok = not use_hook_filter or rci_short_down
+
+// POフィルター: 上昇PO=買いのみ、下降PO=売りのみ
+bool po_bull_ok = not use_po_filter or po_up
+bool po_bear_ok = not use_po_filter or po_down
+
+// ダウフィルター: 上昇トレンド=買いのみ、下降トレンド=売りのみ
+bool dow_bull_ok = not use_dow_filter or dow_uptrend
+bool dow_bear_ok = not use_dow_filter or dow_downtrend
+
+bgcolor(show_rci_bg and bg_bull_3 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok ? c_bull_st3 : na, title="買い 短期+中期+長期")
+bgcolor(show_rci_bg and bg_bull_2 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok ? c_bull_st2 : na, title="買い 短期+中期")
+bgcolor(show_rci_bg and bg_bull_1 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok ? c_bull_st1 : na, title="買い 短期")
+bgcolor(show_rci_bg and bg_bear_3 and filter_short_ok and hook_bear_ok and po_bear_ok and ema_break_bear_ok and dow_bear_ok ? c_bear_st3 : na, title="売り 短期+中期+長期")
+bgcolor(show_rci_bg and bg_bear_2 and filter_short_ok and hook_bear_ok and po_bear_ok and ema_break_bear_ok and dow_bear_ok ? c_bear_st2 : na, title="売り 短期+中期")
+bgcolor(show_rci_bg and bg_bear_1 and filter_short_ok and hook_bear_ok and po_bear_ok and ema_break_bear_ok and dow_bear_ok ? c_bear_st1 : na, title="売り 短期")
+
+// === RCIステージ判定（フィルター適用後） ===
+// 買いステージ（フィルター条件を全て満たした時のみ）
+bool rci_bull_3_filtered = bg_bull_3 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok
+bool rci_bull_2_filtered = bg_bull_2 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok
+bool rci_bull_1_filtered = bg_bull_1 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok
+
+// 売りステージ（フィルター条件を全て満たした時のみ）
+bool rci_bear_3_filtered = bg_bear_3 and filter_short_ok and hook_bear_ok and po_bear_ok and ema_break_bear_ok and dow_bear_ok
+bool rci_bear_2_filtered = bg_bear_2 and filter_short_ok and hook_bear_ok and po_bear_ok and ema_break_bear_ok and dow_bear_ok
+bool rci_bear_1_filtered = bg_bear_1 and filter_short_ok and hook_bear_ok and po_bear_ok and ema_break_bear_ok and dow_bear_ok
+
+// === RCIアラート ===
+// RCIステージ発生（立ち上がり）
+bool any_rci_bull = (rci_bull_3_filtered and not rci_bull_3_filtered[1]) or (rci_bull_2_filtered and not rci_bull_2_filtered[1]) or (rci_bull_1_filtered and not rci_bull_1_filtered[1])
+bool any_rci_bear = (rci_bear_3_filtered and not rci_bear_3_filtered[1]) or (rci_bear_2_filtered and not rci_bear_2_filtered[1]) or (rci_bear_1_filtered and not rci_bear_1_filtered[1])
+
+// RCI統合アラート
+alertcondition(any_rci_bull or any_rci_bear, "RCIステージ", "1H RCIステージ発生")
+
+// 買い/売り別
+alertcondition(any_rci_bull, "RCI買い", "1H RCI買いステージ発生")
+alertcondition(any_rci_bear, "RCI売り", "1H RCI売りステージ発生")
+
+// === 情報テーブル ===
+var table info = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 70))
+if barstate.islast
+    table.cell(info, 0, 0, "1H ENV", text_color=color.white, text_size=size.small)
+    table.cell(info, 1, 0, "", text_color=color.white)
+    table.cell(info, 0, 1, "PO:", text_color=color.white, text_size=size.tiny)
+    po_text = po_up ? "↑UP" : po_down ? "↓DN" : "---"
+    po_col = po_up ? color.lime : po_down ? color.red : color.gray
+    table.cell(info, 1, 1, po_text, text_color=po_col, text_size=size.tiny)
+    table.cell(info, 0, 2, "Dir:", text_color=color.white, text_size=size.tiny)
+    dir_text = zz_dir > 0 ? "↑" : "↓"
+    dir_col = zz_dir > 0 ? color.lime : color.red
+    table.cell(info, 1, 2, dir_text, text_color=dir_col, text_size=size.tiny)
+    table.cell(info, 0, 3, "MACD:", text_color=color.white, text_size=size.tiny)
+    macd_text = str.tostring(macd_line, "#.###")
+    macd_col = macd_line > 0 ? color.lime : color.red
+    table.cell(info, 1, 3, macd_text, text_color=macd_col, text_size=size.tiny)
+    table.cell(info, 0, 4, "High:", text_color=color.white, text_size=size.tiny)
+    high_text = not na(pivot_high_1) ? str.tostring(pivot_high_1.price, "#.###") : "---"
+    table.cell(info, 1, 4, high_text, text_color=color.white, text_size=size.tiny)
+    table.cell(info, 0, 5, "Low:", text_color=color.white, text_size=size.tiny)
+    low_text = not na(pivot_low_1) ? str.tostring(pivot_low_1.price, "#.###") : "---"
+    table.cell(info, 1, 5, low_text, text_color=color.white, text_size=size.tiny)
+    // 見込みダイバー状態
+    table.cell(info, 0, 6, "Prosp:", text_color=color.white, text_size=size.tiny)
+    prosp_text = prosp_hidden_bull ? "HD↑" : prosp_regular_bull ? "RD↑" : prosp_hidden_bear ? "HD↓" : prosp_regular_bear ? "RD↓" : "---"
+    prosp_col = (prosp_hidden_bull or prosp_regular_bull) ? color.lime : (prosp_hidden_bear or prosp_regular_bear) ? color.red : color.gray
+    table.cell(info, 1, 6, prosp_text, text_color=prosp_col, text_size=size.tiny)
+    // RCIステージ状態
+    table.cell(info, 0, 7, "RCI:", text_color=color.white, text_size=size.tiny)
+    rci_stage_text = bg_bull_3 ? "BUY3" : bg_bull_2 ? "BUY2" : bg_bull_1 ? "BUY1" : bg_bear_3 ? "SELL3" : bg_bear_2 ? "SELL2" : bg_bear_1 ? "SELL1" : "---"
+    rci_stage_col = (bg_bull_3 or bg_bull_2 or bg_bull_1) ? color.rgb(255, 50, 50) : (bg_bear_3 or bg_bear_2 or bg_bear_1) ? color.rgb(0, 180, 255) : color.gray
+    table.cell(info, 1, 7, rci_stage_text, text_color=rci_stage_col, text_size=size.tiny)
+    // ダウトレンド状態
+    table.cell(info, 0, 8, "Dow:", text_color=color.white, text_size=size.tiny)
+    dow_text = dow_uptrend ? "↑UP" : dow_downtrend ? "↓DN" : in_range ? "RANGE" : "---"
+    dow_col = dow_uptrend ? color.lime : dow_downtrend ? color.red : in_range ? color.yellow : color.gray
+    table.cell(info, 1, 8, dow_text, text_color=dow_col, text_size=size.tiny)
