@@ -61,6 +61,7 @@ use_po_filter = input.bool(false, "POフィルター有効", group=grp_po_filter
 // === ダウフィルター設定 ===
 grp_dow = "RCI BG Filter (Dow)"
 use_dow_filter = input.bool(false, "ダウフィルター有効", group=grp_dow, tooltip="ZigZagでトレンド方向が確定するまで背景色を表示しない")
+hide_bg_in_range = input.bool(false, "レンジ中は背景色を非表示", group=grp_dow, tooltip="レンジ状態では背景色を表示しない")
 show_dow_lines = input.bool(false, "ダウ基準線を表示", group=grp_dow, tooltip="base_highとbase_lowの水平線を表示")
 dow_high_color = input.color(color.lime, "基準高値の色", group=grp_dow)
 dow_low_color = input.color(color.red, "基準安値の色", group=grp_dow)
@@ -345,6 +346,14 @@ if dow_state == 1
         base_high := tentative_high  // 暫定高値に追従（確定前）
         hide_high_line := true  // 高値ラインは確定まで非表示
 
+    // 暫定安値がbase_lowを下回った時点で下降トレンドへ（即時判定）
+    if not na(tentative_low) and tentative_low < base_low
+        dow_state := -1
+        base_high := latest_high
+        base_low := tentative_low
+        hide_low_line := true
+        hide_high_line := false
+
     if high_confirmed
         // 高値確定時
         if latest_high >= base_high
@@ -376,6 +385,14 @@ if dow_state == -1
         base_low := tentative_low  // 暫定安値に追従（確定前）
         hide_low_line := true  // 安値ラインは確定まで非表示
 
+    // 暫定高値がbase_highを上抜けた時点で上昇トレンドへ（即時判定）
+    if not na(tentative_high) and tentative_high > base_high
+        dow_state := 1
+        base_high := tentative_high
+        base_low := latest_low
+        hide_high_line := true
+        hide_low_line := false
+
     if low_confirmed
         // 安値確定時
         if latest_low <= base_low
@@ -400,6 +417,22 @@ if dow_state == -1
 
 // レンジ中の処理
 if dow_state == 2
+    // 暫定高値がbase_highを上抜けた時点で上昇トレンドへ（即時判定）
+    if not na(tentative_high) and tentative_high > base_high
+        dow_state := 1
+        base_high := tentative_high
+        base_low := latest_low
+        hide_high_line := true
+        hide_low_line := false
+
+    // 暫定安値がbase_lowを下回った時点で下降トレンドへ（即時判定）
+    if not na(tentative_low) and tentative_low < base_low
+        dow_state := -1
+        base_high := latest_high
+        base_low := tentative_low
+        hide_low_line := true
+        hide_high_line := false
+
     if high_confirmed and latest_high > base_high
         // 基準高値を上抜け → 上昇トレンドへ
         dow_state := 1
@@ -560,9 +593,9 @@ bool hook_bear_ok = not use_hook_filter or rci_short_down
 bool po_bull_ok = not use_po_filter or po_up
 bool po_bear_ok = not use_po_filter or po_down
 
-// ダウフィルター: 上昇トレンド=買いのみ、下降トレンド=売りのみ
-bool dow_bull_ok = not use_dow_filter or dow_uptrend
-bool dow_bear_ok = not use_dow_filter or dow_downtrend
+// ダウフィルター: 上昇トレンド=買いのみ、下降トレンド=売りのみ、レンジ中はオプション
+bool dow_bull_ok = not use_dow_filter or dow_uptrend or (not hide_bg_in_range and in_range)
+bool dow_bear_ok = not use_dow_filter or dow_downtrend or (not hide_bg_in_range and in_range)
 
 bgcolor(show_rci_bg and bg_bull_3 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok ? c_bull_st3 : na, title="買い 短期+中期+長期")
 bgcolor(show_rci_bg and bg_bull_2 and filter_long_ok and hook_bull_ok and po_bull_ok and ema_break_bull_ok and dow_bull_ok ? c_bull_st2 : na, title="買い 短期+中期")
