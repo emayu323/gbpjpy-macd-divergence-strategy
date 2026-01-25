@@ -2,7 +2,8 @@
 indicator("sukepoyo environment", overlay=true, max_lines_count=500, max_labels_count=500)
 
 // ==========================================
-// sukepoyo environment - 1時間足環境認識インジケーター
+// sukepoyo environment - マルチタイムフレーム環境認識インジケーター
+// - チャート時間足に連動（1H/4H/日足等）
 // - MACDダイバージェンス（Hidden/Regular）
 // - パーフェクトオーダー（20/30/40 EMA）
 // - ZigZag (sukepoyo_sub.pine準拠)
@@ -10,14 +11,23 @@ indicator("sukepoyo environment", overlay=true, max_lines_count=500, max_labels_
 // - RCI 3段階ステージ背景色
 // ==========================================
 
-// === ZigZag設定 ===
-grp_zz = "ZigZag (1H)"
+// === ZigZag設定 (Main) ===
+grp_zz = "ZigZag 1 (Main)"
 zz_show = input.bool(true, "Show ZigZag", group=grp_zz)
 zz_depth = input.int(12, "Depth", minval=1, group=grp_zz)
 zz_deviation = input.int(5, "Deviation (Points)", minval=1, group=grp_zz)
 zz_backstep = input.int(3, "Backstep", minval=1, group=grp_zz)
 zz_color = input.color(color.white, "Line Color", group=grp_zz)
 zz_width = input.int(2, "Line Width", minval=1, group=grp_zz)
+
+// === ZigZag設定 (Fast) ===
+grp_zz2 = "ZigZag 2 (Fast)"
+zz2_show = input.bool(true, "Show ZigZag", group=grp_zz2)
+zz2_depth = input.int(5, "Depth", minval=1, group=grp_zz2)
+zz2_deviation = input.int(3, "Deviation (Points)", minval=1, group=grp_zz2)
+zz2_backstep = input.int(2, "Backstep", minval=1, group=grp_zz2)
+zz2_color = input.color(color.fuchsia, "Line Color", group=grp_zz2)
+zz2_width = input.int(2, "Line Width", minval=1, group=grp_zz2)
 
 // === MACD設定 ===
 grp_macd = "MACD"
@@ -78,19 +88,19 @@ regular_bull_color = input.color(color.aqua, "Regular Bullish Color", group=grp_
 regular_bear_color = input.color(color.orange, "Regular Bearish Color", group=grp_div)
 div_line_width = input.int(2, "Divergence Line Width", minval=1, maxval=5, group=grp_div)
 
-// === 1時間足データ取得 ===
-tf_1h = "60"
+// === 時間足表示用ラベル ===
+tf_label = timeframe.period == "1" ? "1m" : timeframe.period == "5" ? "5m" : timeframe.period == "15" ? "15m" : timeframe.period == "30" ? "30m" : timeframe.period == "60" ? "1H" : timeframe.period == "240" ? "4H" : timeframe.period == "D" ? "D" : timeframe.period == "W" ? "W" : timeframe.period
 
-// 1H EMA
-e1 = request.security(syminfo.tickerid, tf_1h, ta.ema(close, ema1_len))
-e2 = request.security(syminfo.tickerid, tf_1h, ta.ema(close, ema2_len))
-e3 = request.security(syminfo.tickerid, tf_1h, ta.ema(close, ema3_len))
+// === EMA計算（チャート時間足） ===
+e1 = ta.ema(close, ema1_len)
+e2 = ta.ema(close, ema2_len)
+e3 = ta.ema(close, ema3_len)
 
-// 1H MACD
-[macd_line, signal_line, macd_hist] = request.security(syminfo.tickerid, tf_1h, ta.macd(close, macd_fast, macd_slow, macd_signal_len))
+// === MACD計算（チャート時間足） ===
+[macd_line, signal_line, macd_hist] = ta.macd(close, macd_fast, macd_slow, macd_signal_len)
 
-// 1H フィルターEMA
-filter_ema = request.security(syminfo.tickerid, tf_1h, ta.ema(close, rci_filter_ema_len))
+// === フィルターEMA（チャート時間足） ===
+filter_ema = ta.ema(close, rci_filter_ema_len)
 
 // フィルター判定: 価格がEMAより上=ロングOK、下=ショートOK
 bool filter_long_ok = not use_rci_filter or close > filter_ema
@@ -116,10 +126,10 @@ rci(int len) =>
     float rciValue = (1.0 - (6.0 * sumD2) / (len * (len * len - 1.0))) * 100.0
     rciValue
 
-// 1H RCI取得
-rci_short = request.security(syminfo.tickerid, tf_1h, rci(rci_short_len))
-rci_mid = request.security(syminfo.tickerid, tf_1h, rci(rci_mid_len))
-rci_long = request.security(syminfo.tickerid, tf_1h, rci(rci_long_len))
+// === RCI計算（チャート時間足） ===
+rci_short = rci(rci_short_len)
+rci_mid = rci(rci_mid_len)
+rci_long = rci(rci_long_len)
 
 // RCI短期の方向判定（フックフィルター用）
 bool rci_short_up = rci_short > rci_short[1]    // 上向き（買いフック）
@@ -288,6 +298,36 @@ else if zz_dir < 0
         macd_at_z2 := macd_line
     if high > z_A.price
         z_A := chart.point.now(high)
+
+// === ZigZag 2 (Fast) 計算 ===
+float dev_th2 = zz2_deviation * syminfo.mintick
+int hb2 = ta.highestbars(zz2_depth)
+int lb2 = ta.lowestbars(zz2_depth)
+hr2 = ta.barssince(not (high[-hb2] - high > dev_th2)[1])
+lr2 = ta.barssince(not (low - low[-lb2] > dev_th2)[1])
+zz2_dir = ta.barssince(not (hr2 > lr2)) >= zz2_backstep ? -1 : 1
+
+// ZigZag 2 ポイント追跡
+var chart.point z_B = chart.point.now(low)
+var chart.point z1_B = chart.point.now(low)
+var chart.point z2_B = chart.point.now(high)
+
+if zz2_dir != zz2_dir[1]
+    z1_B := z2_B.copy()
+    z2_B := z_B.copy()
+
+if zz2_dir > 0
+    if high > z2_B.price
+        z2_B := chart.point.now(high)
+        z_B := chart.point.now(low)
+    if low < z_B.price
+        z_B := chart.point.now(low)
+else if zz2_dir < 0
+    if low < z2_B.price
+        z2_B := chart.point.now(low)
+        z_B := chart.point.now(high)
+    if high > z_B.price
+        z_B := chart.point.now(high)
 
 // === パーフェクトオーダー判定 ===
 bool po_up = e1 > e2 and e2 > e3
@@ -515,12 +555,19 @@ bool prosp_rbe_price = prosp_bear_valid and z2_A.price > pivot_high_1.price
 bool prosp_rbe_macd = prosp_bear_valid and macd_at_z2 < macd_at_high_1
 bool prosp_regular_bear = use_regular and prosp_rbe_price and prosp_rbe_macd
 
-// === 描画: ZigZag (sukepoyo_sub.pine準拠) ===
+// === 描画: ZigZag 1 (Main) ===
 var line zz_line = na
 if zz_dir == zz_dir[1]
     line.delete(zz_line[1])
 if zz_show
     zz_line := line.new(z1_A.time, z1_A.price, z2_A.time, z2_A.price, xloc.bar_time, extend.none, zz_color, line.style_solid, zz_width)
+
+// === 描画: ZigZag 2 (Fast) ===
+var line zz_line2 = na
+if zz2_dir == zz2_dir[1]
+    line.delete(zz_line2[1])
+if zz2_show
+    zz_line2 := line.new(z1_B.time, z1_B.price, z2_B.time, z2_B.price, xloc.bar_time, extend.none, zz2_color, line.style_solid, zz2_width)
 
 // === 描画: 確定ダイバージェンスライン（実線） ===
 if show_div and hidden_bull and not na(pivot_low_1) and not na(pivot_low_2)
@@ -569,9 +616,9 @@ if show_div and regular_bear and not na(pivot_high_1)
     label.new(pivot_high_1.time, pivot_high_1.price, "RD↓", xloc.bar_time, yloc.price, regular_bear_color, label.style_label_down, color.black, size.small)
 
 // === 描画: EMA ===
-p_ema1 = plot(show_ema ? e1 : na, "1H EMA20", color.red, 2)
-p_ema2 = plot(show_ema ? e2 : na, "1H EMA30", color.blue, 2)
-p_ema3 = plot(show_ema ? e3 : na, "1H EMA40", color.yellow, 2)
+p_ema1 = plot(show_ema ? e1 : na, "EMA20", color.red, 2)
+p_ema2 = plot(show_ema ? e2 : na, "EMA30", color.blue, 2)
+p_ema3 = plot(show_ema ? e3 : na, "EMA40", color.yellow, 2)
 
 // === 描画: フィルターEMA ===
 plot(show_filter_ema ? filter_ema : na, "Filter EMA", filter_ema_color, 2, plot.style_line)
@@ -620,17 +667,21 @@ bool rci_bear_1_filtered = bg_bear_1 and filter_short_ok and hook_bear_ok and po
 bool any_rci_bull = (rci_bull_3_filtered and not rci_bull_3_filtered[1]) or (rci_bull_2_filtered and not rci_bull_2_filtered[1]) or (rci_bull_1_filtered and not rci_bull_1_filtered[1])
 bool any_rci_bear = (rci_bear_3_filtered and not rci_bear_3_filtered[1]) or (rci_bear_2_filtered and not rci_bear_2_filtered[1]) or (rci_bear_1_filtered and not rci_bear_1_filtered[1])
 
-// RCI統合アラート
-alertcondition(any_rci_bull or any_rci_bear, "RCIステージ", "1H RCIステージ発生")
+// RCI統合アラート（alertconditionは静的メッセージ）
+alertcondition(any_rci_bull or any_rci_bear, "RCIステージ", "RCIステージ発生")
+alertcondition(any_rci_bull, "RCI買い", "RCI買いステージ発生")
+alertcondition(any_rci_bear, "RCI売り", "RCI売りステージ発生")
 
-// 買い/売り別
-alertcondition(any_rci_bull, "RCI買い", "1H RCI買いステージ発生")
-alertcondition(any_rci_bear, "RCI売り", "1H RCI売りステージ発生")
+// 動的メッセージ付きアラート（時間足を含む）
+if any_rci_bull
+    alert(tf_label + " RCI買いステージ発生", alert.freq_once_per_bar)
+if any_rci_bear
+    alert(tf_label + " RCI売りステージ発生", alert.freq_once_per_bar)
 
 // === 情報テーブル ===
 var table info = table.new(position.top_right, 2, 9, bgcolor=color.new(color.black, 70))
 if barstate.islast
-    table.cell(info, 0, 0, "1H ENV", text_color=color.white, text_size=size.small)
+    table.cell(info, 0, 0, tf_label + " ENV", text_color=color.white, text_size=size.small)
     table.cell(info, 1, 0, "", text_color=color.white)
     table.cell(info, 0, 1, "PO:", text_color=color.white, text_size=size.tiny)
     po_text = po_up ? "↑UP" : po_down ? "↓DN" : "---"
